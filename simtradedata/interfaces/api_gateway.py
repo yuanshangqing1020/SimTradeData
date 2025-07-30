@@ -98,9 +98,9 @@ class APIGateway:
         except Exception as e:
             logger.error(f"停止API服务失败: {e}")
 
-    def check_rate_limit(self, client_id: str) -> bool:
+    def is_request_allowed(self, client_id: str) -> bool:
         """
-        检查客户端是否超过限流阈值
+        检查客户端请求是否被允许（未超过限流阈值）
 
         Args:
             client_id: 客户端ID
@@ -233,7 +233,7 @@ class APIGateway:
                 return response
 
             # 2. 限流检查
-            if not self.check_rate_limit(client_id):
+            if not self.is_request_allowed(client_id):
                 response = {
                     "success": False,
                     "error": "Rate limit exceeded",

@@ -16,6 +16,7 @@ except ImportError:
     schedule = None
 
 from ..config import Config
+from ..core import BaseManager
 from ..data_sources import DataSourceManager
 from ..database import DatabaseManager
 from .engine import DataProcessingEngine
@@ -23,7 +24,7 @@ from .engine import DataProcessingEngine
 logger = logging.getLogger(__name__)
 
 
-class BatchScheduler:
+class BatchScheduler(BaseManager):
     """批处理调度器"""
 
     def __init__(
@@ -31,6 +32,7 @@ class BatchScheduler:
         db_manager: DatabaseManager,
         data_source_manager: DataSourceManager,
         config: Config = None,
+        **kwargs,
     ):
         """
         初始化批处理调度器
@@ -40,24 +42,46 @@ class BatchScheduler:
             data_source_manager: 数据源管理器
             config: 配置对象
         """
+        # 设置依赖
         self.db_manager = db_manager
         self.data_source_manager = data_source_manager
-        self.config = config or Config()
+        if not self.db_manager:
+            raise ValueError("数据库管理器不能为空")
+        if not self.data_source_manager:
+            raise ValueError("数据源管理器不能为空")
 
+        # 调用BaseManager初始化
+        super().__init__(
+            config=config,
+            db_manager=db_manager,
+            data_source_manager=data_source_manager,
+            **kwargs,
+        )
+
+    def _init_specific_config(self):
+        """初始化批处理调度器特定配置"""
+        # 调度配置
+        self.sync_schedule = self._get_config("sync_schedule", "09:00")
+        self.enable_weekend_sync = self._get_config("enable_weekend_sync", False)
+        self.max_retry_count = self._get_config("max_retry_count", 3)
+        self.retry_delay_minutes = self._get_config("retry_delay_minutes", 30)
+
+    def _init_components(self):
+        """初始化批处理调度器组件"""
         # 初始化数据处理引擎
         self.processing_engine = DataProcessingEngine(
-            db_manager, data_source_manager, config
+            self.db_manager, self.data_source_manager, self.config
         )
 
         # 延迟初始化同步管理器以避免循环导入
         self._sync_manager = None
 
-        # 调度配置
-        self.enable_scheduler = self.config.get("scheduler.enabled", True)
-        self.daily_sync_time = self.config.get("scheduler.daily_sync_time", "02:00")
-        self.max_workers = self.config.get("scheduler.max_workers", 3)
-        self.retry_times = self.config.get("scheduler.retry_times", 3)
-        self.retry_delay = self.config.get("scheduler.retry_delay", 300)  # 5分钟
+        # 调度配置 - 已在_init_specific_config中设置
+        self.enable_scheduler = self._get_config("enabled", True)
+        self.daily_sync_time = self._get_config("daily_sync_time", "02:00")
+        self.max_workers = self._get_config("max_workers", 3)
+        self.retry_times = self._get_config("retry_times", 3)
+        self.retry_delay = self._get_config("retry_delay", 300)  # 5分钟
 
         # 运行状态
         self.is_running = False
@@ -65,7 +89,11 @@ class BatchScheduler:
         self.task_history = []
         self.scheduler_thread = None
 
-        logger.info("批处理调度器初始化完成")
+        self.logger.info("批处理调度器初始化完成")
+
+    def _get_required_attributes(self) -> List[str]:
+        """必需属性列表"""
+        return ["db_manager", "data_source_manager", "processing_engine"]
 
     def start_scheduler(self):
         """启动调度器"""

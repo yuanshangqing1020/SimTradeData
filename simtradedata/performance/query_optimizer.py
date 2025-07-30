@@ -11,15 +11,16 @@ from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 from ..config import Config
+from ..core import BaseManager
 from ..database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
-class QueryOptimizer:
+class QueryOptimizer(BaseManager):
     """查询优化器"""
 
-    def __init__(self, db_manager: DatabaseManager, config: Config = None):
+    def __init__(self, db_manager: DatabaseManager, config: Config = None, **kwargs):
         """
         初始化查询优化器
 
@@ -27,26 +28,31 @@ class QueryOptimizer:
             db_manager: 数据库管理器
             config: 配置对象
         """
+        # 设置数据库管理器依赖
         self.db_manager = db_manager
-        self.config = config or Config()
+        if not self.db_manager:
+            raise ValueError("数据库管理器不能为空")
 
+        # 调用BaseManager初始化
+        super().__init__(config=config, db_manager=db_manager, **kwargs)
+
+    def _init_specific_config(self):
+        """初始化查询优化器特定配置"""
         # 优化配置
-        self.enable_query_cache = self.config.get(
-            "query_optimizer.enable_query_cache", True
-        )
-        self.cache_ttl = self.config.get("query_optimizer.cache_ttl", 300)  # 5分钟
-        self.max_cache_size = self.config.get("query_optimizer.max_cache_size", 1000)
-        self.enable_explain = self.config.get("query_optimizer.enable_explain", True)
+        self.enable_query_cache = self._get_config("enable_query_cache", True)
+        self.cache_ttl = self._get_config("cache_ttl", 300)  # 5分钟
+        self.max_cache_size = self._get_config("max_cache_size", 1000)
+        self.enable_explain = self._get_config("enable_explain", True)
+        self.slow_query_threshold = self._get_config("slow_query_threshold", 1.0)
 
+    def _init_components(self):
+        """初始化查询优化器组件"""
         # 查询缓存
         self.query_cache = {}
         self.cache_stats = {"hits": 0, "misses": 0, "evictions": 0}
 
         # 查询统计
         self.query_stats = defaultdict(list)
-        self.slow_query_threshold = self.config.get(
-            "query_optimizer.slow_query_threshold", 1.0
-        )
 
         # 索引建议
         self.index_suggestions = []
@@ -62,7 +68,17 @@ class QueryOptimizer:
             "limit": re.compile(r"LIMIT\s+(\d+)", re.IGNORECASE),
         }
 
-        logger.info("查询优化器初始化完成")
+        self.logger.info("查询优化器初始化完成")
+
+    def _get_required_attributes(self) -> List[str]:
+        """必需属性列表"""
+        return [
+            "db_manager",
+            "query_cache",
+            "cache_stats",
+            "query_stats",
+            "query_patterns",
+        ]
 
     def optimize_query(self, sql: str, params: Tuple = None) -> Tuple[str, Tuple]:
         """

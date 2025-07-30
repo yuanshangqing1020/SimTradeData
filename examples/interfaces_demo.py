@@ -337,7 +337,7 @@ def demo_api_gateway():
     # 连续请求测试
     success_count = 0
     for i in range(5):
-        if gateway.check_rate_limit(client_id):
+        if gateway.is_request_allowed(client_id):
             success_count += 1
 
     print(f"  5次请求中通过: {success_count} 次")

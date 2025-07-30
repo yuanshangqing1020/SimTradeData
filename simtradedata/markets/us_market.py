@@ -11,15 +11,16 @@ from typing import Any, Dict, List, Optional
 import pytz
 
 from ..config import Config
+from ..core import BaseManager
 from ..database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
-class USMarketAdapter:
+class USMarketAdapter(BaseManager):
     """美股市场适配器"""
 
-    def __init__(self, db_manager: DatabaseManager, config: Config = None):
+    def __init__(self, db_manager: DatabaseManager, config: Config = None, **kwargs):
         """
         初始化美股市场适配器
 
@@ -27,14 +28,24 @@ class USMarketAdapter:
             db_manager: 数据库管理器
             config: 配置对象
         """
+        # 设置数据库管理器依赖
         self.db_manager = db_manager
-        self.config = config or Config()
+        if not self.db_manager:
+            raise ValueError("数据库管理器不能为空")
 
+        # 调用BaseManager初始化
+        super().__init__(config=config, db_manager=db_manager, **kwargs)
+
+    def _init_specific_config(self):
+        """初始化美股适配器特定配置"""
         # 美股市场配置
-        self.market_code = "US"
-        self.currency = "USD"
-        self.timezone = pytz.timezone("America/New_York")
+        self.market_code = self._get_config("market_code", "US")
+        self.currency = self._get_config("currency", "USD")
+        self.timezone_name = self._get_config("timezone", "America/New_York")
+        self.timezone = pytz.timezone(self.timezone_name)
 
+    def _init_components(self):
+        """初始化美股适配器组件"""
         # 美股交易时间 (东部时间)
         self.trading_sessions = {
             "premarket": {"start": time(4, 0), "end": time(9, 30)},  # 盘前交易
@@ -76,6 +87,16 @@ class USMarketAdapter:
         }
 
         logger.info("美股市场适配器初始化完成")
+
+    def _get_required_attributes(self) -> List[str]:
+        """必需属性列表"""
+        return [
+            "db_manager",
+            "trading_sessions",
+            "exchanges",
+            "stock_types",
+            "field_mapping",
+        ]
 
     def adapt_stock_info(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         """

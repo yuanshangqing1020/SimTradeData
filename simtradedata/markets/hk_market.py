@@ -11,15 +11,16 @@ from typing import Any, Dict, List, Optional
 import pytz
 
 from ..config import Config
+from ..core import BaseManager
 from ..database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
-class HKMarketAdapter:
+class HKMarketAdapter(BaseManager):
     """港股市场适配器"""
 
-    def __init__(self, db_manager: DatabaseManager, config: Config = None):
+    def __init__(self, db_manager: DatabaseManager, config: Config = None, **kwargs):
         """
         初始化港股市场适配器
 
@@ -27,14 +28,24 @@ class HKMarketAdapter:
             db_manager: 数据库管理器
             config: 配置对象
         """
+        # 设置数据库管理器依赖
         self.db_manager = db_manager
-        self.config = config or Config()
+        if not self.db_manager:
+            raise ValueError("数据库管理器不能为空")
 
+        # 调用BaseManager初始化
+        super().__init__(config=config, db_manager=db_manager, **kwargs)
+
+    def _init_specific_config(self):
+        """初始化港股适配器特定配置"""
         # 港股市场配置
-        self.market_code = "HK"
-        self.currency = "HKD"
-        self.timezone = pytz.timezone("Asia/Hong_Kong")
+        self.market_code = self._get_config("market_code", "HK")
+        self.currency = self._get_config("currency", "HKD")
+        self.timezone_name = self._get_config("timezone", "Asia/Hong_Kong")
+        self.timezone = pytz.timezone(self.timezone_name)
 
+    def _init_components(self):
+        """初始化港股适配器组件"""
         # 港股交易时间
         self.trading_sessions = {
             "morning": {"start": time(9, 30), "end": time(12, 0)},
@@ -66,6 +77,10 @@ class HKMarketAdapter:
         }
 
         logger.info("港股市场适配器初始化完成")
+
+    def _get_required_attributes(self) -> List[str]:
+        """必需属性列表"""
+        return ["db_manager", "trading_sessions", "field_mapping", "stock_types"]
 
     def adapt_stock_info(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         """
