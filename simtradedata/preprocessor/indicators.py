@@ -28,12 +28,19 @@ class TechnicalIndicators:
         """
         self.config = config or Config()
 
-        # 指标配置
-        self.ma_periods = self.config.get("indicators.ma_periods", [5, 10, 20, 60])
-        self.enable_ma = self.config.get("indicators.ma_enabled", True)
-        self.enable_ema = self.config.get("indicators.ema_enabled", False)
-        self.enable_macd = self.config.get("indicators.macd_enabled", False)
-        self.enable_rsi = self.config.get("indicators.rsi_enabled", False)
+        # 指标配置 - 从技术指标配置中读取
+        from ..config.defaults import get_technical_indicators_config
+
+        indicators_config = get_technical_indicators_config()
+
+        self.ma_periods = indicators_config.get("ma", {}).get(
+            "periods", [5, 10, 20, 60]
+        )
+        self.enable_ma = indicators_config.get("ma", {}).get("enabled", True)
+        self.enable_ema = indicators_config.get("ema", {}).get("enabled", False)
+        self.enable_macd = indicators_config.get("macd", {}).get("enabled", False)
+        self.enable_rsi = indicators_config.get("rsi", {}).get("enabled", False)
+        self.enable_kdj = indicators_config.get("kdj", {}).get("enabled", False)
 
         # 计算所需的历史数据天数
         self.history_days = max(self.ma_periods) + 10 if self.ma_periods else 70
@@ -110,6 +117,10 @@ class TechnicalIndicators:
                 rsi_indicators = self._calculate_rsi(df)
                 indicators.update(rsi_indicators)
 
+            if self.enable_kdj:
+                kdj_indicators = self._calculate_kdj(df)
+                indicators.update(kdj_indicators)
+
             # 将指标添加到PTrade数据中
             ptrade_data.update(indicators)
 
@@ -133,11 +144,11 @@ class TechnicalIndicators:
             start_date = current_dt - timedelta(days=self.history_days)
 
             sql = """
-            SELECT trade_date as date, close, high, low, volume
+            SELECT date, close, high, low, volume
             FROM market_data 
             WHERE symbol = ? AND frequency = '1d' 
-            AND trade_date >= ? AND trade_date < ?
-            ORDER BY trade_date
+            AND date >= ? AND date < ?
+            ORDER BY date
             """
 
             results = db_manager.fetchall(
@@ -230,20 +241,20 @@ class TechnicalIndicators:
             macd_histogram = macd_line - signal_line
 
             return {
-                "macd": round(float(macd_line.iloc[-1]), 4),
-                "macd_signal": round(float(signal_line.iloc[-1]), 4),
-                "macd_hist": round(float(macd_histogram.iloc[-1]), 4),
+                "macd_dif": round(float(macd_line.iloc[-1]), 4),
+                "macd_dea": round(float(signal_line.iloc[-1]), 4),
+                "macd_histogram": round(float(macd_histogram.iloc[-1]), 4),
             }
 
         except Exception as e:
             logger.error(f"MACD计算失败: {e}")
-            return {"macd": 0.0, "macd_signal": 0.0, "macd_hist": 0.0}
+            return {"macd_dif": 0.0, "macd_dea": 0.0, "macd_histogram": 0.0}
 
     def _calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> Dict[str, float]:
         """计算RSI指标"""
         try:
             if len(df) < period + 1:
-                return {"rsi": 50.0}
+                return {"rsi_12": 50.0}  # 使用数据库字段名
 
             # 计算价格变化
             price_changes = df["close"].diff()
@@ -263,13 +274,13 @@ class TechnicalIndicators:
             latest_rsi = rsi.iloc[-1]
 
             if pd.isna(latest_rsi):
-                return {"rsi": 50.0}
+                return {"rsi_12": 50.0}
 
-            return {"rsi": round(float(latest_rsi), 2)}
+            return {"rsi_12": round(float(latest_rsi), 2)}
 
         except Exception as e:
             logger.error(f"RSI计算失败: {e}")
-            return {"rsi": 50.0}
+            return {"rsi_12": 50.0}
 
     def _calculate_bollinger_bands(
         self, df: pd.DataFrame, period: int = 20, std_dev: float = 2.0

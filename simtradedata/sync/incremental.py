@@ -204,10 +204,22 @@ class IncrementalSync:
             # 将智能补充统计信息添加到结果中
             self.sync_stats["smart_backfill"] = backfill_stats
 
+            # 修正成功率计算：如果有成功的股票处理，即使有部分错误也应当整体标记为部分成功
+            effective_success = self.sync_stats["success_count"] > 0
+            effective_error = self.sync_stats["error_count"] > 0
+
+            if effective_success and not effective_error:
+                result_status = "completed"
+            elif effective_success and effective_error:
+                result_status = "partial_success"
+            else:
+                result_status = "failed"
+
             logger.info(
                 f"增量同步完成: 成功={self.sync_stats['success_count']}, "
                 f"错误={self.sync_stats['error_count']}, "
-                f"跳过={self.sync_stats['skipped_count']}"
+                f"跳过={self.sync_stats['skipped_count']}, "
+                f"整体状态={result_status}"
             )
 
             if backfill_stats["backfilled_symbols"] > 0:
@@ -502,10 +514,17 @@ class IncrementalSync:
                     symbol, start_date, end_date, frequency, force_update=True
                 )
 
+                # 解析嵌套的返回结果格式
+                actual_result = process_result
+                if isinstance(process_result, dict) and "data" in process_result:
+                    actual_result = process_result["data"]
+                    if isinstance(actual_result, dict) and "data" in actual_result:
+                        actual_result = actual_result["data"]
+
                 # 统计结果
-                result["success_count"] = len(process_result.get("processed_dates", []))
-                result["error_count"] = len(process_result.get("failed_dates", []))
-                result["sync_dates"] = process_result.get("processed_dates", [])
+                result["success_count"] = len(actual_result.get("processed_dates", []))
+                result["error_count"] = len(actual_result.get("failed_dates", []))
+                result["sync_dates"] = actual_result.get("processed_dates", [])
 
                 logger.debug(
                     f"批量处理结果: 成功={result['success_count']}, 失败={result['error_count']}"
@@ -837,8 +856,49 @@ class IncrementalSync:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """
 
-            sync_status = "completed" if stats["error_count"] == 0 else "failed"
-            error_msg = f"成功={stats['success_count']}, 错误={stats['error_count']}"
+            # 修正同步状态判断逻辑
+            effective_success = stats["success_count"] > 0
+            effective_error = stats["error_count"] > 0
+
+            if effective_success and not effective_error:
+                sync_status = "completed"
+            elif effective_success and effective_error:
+                sync_status = "partial_success"
+            else:
+                sync_status = "failed"
+
+            error_msg = f"成功={stats['success_count']}, 错误={stats['error_count']}, 跳过={stats['skipped_count']}"
+
+            # 计算实际插入/更新的记录数
+            # 从sync_date_ranges中统计实际的数据记录数
+            actual_records_count = 0
+            sync_ranges = stats.get("sync_date_ranges", {})
+
+            for frequency_data in sync_ranges.values():
+                if isinstance(frequency_data, dict) and "sync_ranges" in frequency_data:
+                    for symbol_range in frequency_data["sync_ranges"].values():
+                        if isinstance(symbol_range, dict):
+                            actual_records_count += symbol_range.get("sync_count", 0)
+
+            # 如果无法从sync_ranges获取，则查询数据库中目标日期的实际记录数
+            if actual_records_count == 0 and sync_status in [
+                "completed",
+                "partial_success",
+            ]:
+                try:
+                    actual_count_sql = """
+                    SELECT COUNT(*) as count 
+                    FROM market_data 
+                    WHERE date = ? AND frequency = '1d'
+                    """
+                    count_result = self.db_manager.fetchone(
+                        actual_count_sql, (str(target_date),)
+                    )
+                    if count_result:
+                        actual_records_count = count_result["count"]
+                except Exception as e:
+                    logger.warning(f"查询实际记录数失败: {e}")
+                    actual_records_count = stats["success_count"]  # 备用方案
 
             # 为增量同步创建一个汇总记录
             self.db_manager.execute(
@@ -850,9 +910,13 @@ class IncrementalSync:
                     str(target_date),  # last_data_date
                     sync_status,  # status
                     error_msg,  # error_message
-                    stats["success_count"],  # total_records
+                    actual_records_count,  # total_records - 使用实际记录数
                     datetime.now().isoformat(),  # updated_at
                 ),
+            )
+
+            logger.info(
+                f"同步状态已更新: {sync_status}, 实际记录数: {actual_records_count}"
             )
 
         except Exception as e:

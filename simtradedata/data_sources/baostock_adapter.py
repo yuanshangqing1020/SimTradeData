@@ -117,6 +117,8 @@ class BaoStockAdapter(BaseDataSource):
                 if (
                     "login" in rs.error_msg.lower()
                     or "not login" in rs.error_msg.lower()
+                    or "用户未登录" in rs.error_msg
+                    or "未登录" in rs.error_msg
                 ):
                     logger.info(f"检测到BaoStock会话过期，尝试重新连接...")
                     self.disconnect()
@@ -241,18 +243,44 @@ class BaoStockAdapter(BaseDataSource):
 
         def _fetch_data():
             bs_symbol = self._convert_to_baostock_symbol(symbol)
+            year = report_date[:4]
+            quarter = self._convert_report_type(report_type)
 
-            # 获取财务数据
-            rs = self._baostock.query_profit_data(
-                code=bs_symbol,
-                year=report_date[:4],
-                quarter=self._convert_report_type(report_type),
+            # 获取完整的财务数据 - 需要调用多个API
+            financial_data = {}
+
+            # 1. 获取利润表数据
+            profit_rs = self._baostock.query_profit_data(
+                code=bs_symbol, year=year, quarter=quarter
             )
-            df = rs.get_data()
-            if df.empty:
+            if profit_rs.error_code == "0":
+                profit_df = profit_rs.get_data()
+                if not profit_df.empty:
+                    financial_data.update(profit_df.iloc[0].to_dict())
+
+            # 2. 获取资产负债表数据
+            balance_rs = self._baostock.query_balance_data(
+                code=bs_symbol, year=year, quarter=quarter
+            )
+            if balance_rs.error_code == "0":
+                balance_df = balance_rs.get_data()
+                if not balance_df.empty:
+                    financial_data.update(balance_df.iloc[0].to_dict())
+
+            # 3. 获取现金流量表数据
+            cash_flow_rs = self._baostock.query_cash_flow_data(
+                code=bs_symbol, year=year, quarter=quarter
+            )
+            if cash_flow_rs.error_code == "0":
+                cash_flow_df = cash_flow_rs.get_data()
+                if not cash_flow_df.empty:
+                    financial_data.update(cash_flow_df.iloc[0].to_dict())
+
+            if not financial_data:
                 return {}
+
             return self._convert_fundamentals(
-                df.iloc[0], symbol, report_date, report_type
+                financial_data, symbol, report_date, report_type
             )
 
         return self._retry_request(_fetch_data)
@@ -503,29 +531,60 @@ class BaoStockAdapter(BaseDataSource):
         return stock_list
 
     def _convert_fundamentals(
-        self, data: pd.Series, symbol: str, report_date: str, report_type: str
+        self, data: Dict[str, Any], symbol: str, report_date: str, report_type: str
     ) -> Dict[str, Any]:
         """转换财务数据格式"""
+
+        def safe_float(value, default=0.0):
+            """安全的浮点数转换"""
+            if value is None or value == "" or str(value).strip() == "":
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        # BaoStock字段映射
+        revenue = safe_float(data.get("MBRevenue", 0))  # 营业收入
+        net_profit = safe_float(data.get("netProfit", 0))  # 净利润
+        eps = safe_float(data.get("epsTTM", 0))  # 每股收益
+        roe = safe_float(data.get("roeAvg", 0))  # ROE
+
+        # 股本信息
+        total_shares = safe_float(data.get("totalShare", 0))  # 总股本
+        liquid_shares = safe_float(data.get("liqaShare", 0))  # 流通股本
+
+        # 资产负债信息（BaoStock主要提供比率，需要根据净利润等推算）
+        asset_to_equity = safe_float(data.get("assetToEquity", 0))  # 资产权益比
+        liability_to_asset = safe_float(data.get("liabilityToAsset", 0))  # 负债资产比
+
+        # 尝试根据净利润和ROE推算总资产和股东权益
+        total_assets = 0.0
+        shareholders_equity = 0.0
+
+        if roe > 0 and net_profit > 0:
+            # 根据 ROE = 净利润 / 股东权益 推算股东权益
+            shareholders_equity = net_profit / roe
+
+            # 根据资产权益比推算总资产
+            if asset_to_equity > 0:
+                total_assets = shareholders_equity * asset_to_equity
+
         return {
             "symbol": symbol,
             "report_date": report_date,
             "report_type": report_type,
-            "revenue": (
-                float(data.get("operatingRevenue", 0))
-                if data.get("operatingRevenue")
-                else 0
-            ),
-            "net_profit": (
-                float(data.get("netProfit", 0)) if data.get("netProfit") else 0
-            ),
-            "total_assets": (
-                float(data.get("totalAssets", 0)) if data.get("totalAssets") else 0
-            ),
-            "total_equity": (
-                float(data.get("totalEquity", 0)) if data.get("totalEquity") else 0
-            ),
-            "eps": float(data.get("basicEPS", 0)) if data.get("basicEPS") else 0,
-            "roe": float(data.get("roeAvg", 0)) if data.get("roeAvg") else 0,
+            "revenue": revenue,
+            "net_profit": net_profit,
+            "total_assets": total_assets,
+            "shareholders_equity": shareholders_equity,
+            "eps": eps,
+            "roe": roe,
+            "total_shares": total_shares,
+            "liquid_shares": liquid_shares,
+            "asset_to_equity": asset_to_equity,
+            "liability_to_asset": liability_to_asset,
+            "source": "baostock",
         }
 
     def _convert_trade_calendar(self, df: pd.DataFrame) -> List[Dict[str, Any]]:

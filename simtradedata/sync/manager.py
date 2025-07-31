@@ -827,13 +827,78 @@ class SyncManager(BaseManager):
         }
 
         # 限制处理数量以避免太长时间
-        limited_symbols = symbols[:50]  # 只处理前50只股票作为示例
+        limited_symbols = symbols
+
+        # 初始化技术指标计算器（避免重复创建）
+        from ..preprocessor.indicators import TechnicalIndicators
+
+        # 临时降低技术指标计算器的日志级别，避免干扰进度条
+        indicators_logger = logging.getLogger("simtradedata.preprocessor.indicators")
+        original_level = indicators_logger.level
+        indicators_logger.setLevel(logging.WARNING)
+
+        try:
+            indicator_calculator = TechnicalIndicators(self.config)
+        finally:
+            indicators_logger.setLevel(original_level)
 
         # 检查财务数据更新频率 - 财务数据通常季度更新
         from datetime import datetime, timedelta
 
         quarterly_update_threshold = timedelta(days=30)  # 30天内不重复更新财务数据
         daily_update_threshold = timedelta(days=1)  # 1天内不重复更新估值数据
+
+        self.logger.info(f"🚀 开始扩展数据同步: {len(limited_symbols)}只股票")
+
+        # 批量预查询已有数据，避免在循环中重复查询
+        self.logger.info("📊 预查询已有数据以优化性能...")
+
+        # 批量查询财务数据最新更新时间
+        financial_cache = {}
+        if limited_symbols:
+            symbol_placeholders = ",".join(["?" for _ in limited_symbols])
+            financial_query = f"""
+                SELECT symbol, MAX(created_at) as last_update, report_date
+                FROM financials 
+                WHERE symbol IN ({symbol_placeholders}) AND report_date = ?
+                GROUP BY symbol
+            """
+            report_date = f"{target_date.year}-12-31"
+            financial_results = self.db_manager.fetchall(
+                financial_query, limited_symbols + [report_date]
+            )
+            for row in financial_results:
+                financial_cache[row["symbol"]] = row
+
+        # 批量查询估值数据最新更新时间
+        valuation_cache = {}
+        if limited_symbols:
+            valuation_query = f"""
+                SELECT symbol, MAX(created_at) as last_update, date
+                FROM valuations 
+                WHERE symbol IN ({symbol_placeholders}) AND date = ?
+                GROUP BY symbol
+            """
+            valuation_results = self.db_manager.fetchall(
+                valuation_query, limited_symbols + [str(target_date)]
+            )
+            for row in valuation_results:
+                valuation_cache[row["symbol"]] = row
+
+        # 批量查询技术指标最新更新时间
+        indicators_cache = {}
+        if limited_symbols:
+            indicators_query = f"""
+                SELECT symbol, MAX(calculated_at) as last_update, date
+                FROM technical_indicators 
+                WHERE symbol IN ({symbol_placeholders}) AND date = ?
+                GROUP BY symbol
+            """
+            indicators_results = self.db_manager.fetchall(
+                indicators_query, limited_symbols + [str(target_date)]
+            )
+            for row in indicators_results:
+                indicators_cache[row["symbol"]] = row
 
         for symbol in limited_symbols:
             try:
@@ -844,33 +909,27 @@ class SyncManager(BaseManager):
                 try:
                     report_date = f"{target_date.year}-12-31"  # 使用年报
 
-                    # 检查是否已有最近的财务数据
-                    existing_financial = self.db_manager.fetchone(
-                        """
-                        SELECT created_at, report_date 
-                        FROM financials 
-                        WHERE symbol = ? AND report_date = ?
-                        ORDER BY created_at DESC LIMIT 1
-                    """,
-                        (symbol, report_date),
-                    )
+                    # 使用缓存查询代替单独查询
+                    existing_financial = financial_cache.get(symbol)
 
                     should_update_financial = True
-                    if existing_financial and existing_financial["created_at"]:
-                        last_update = datetime.fromisoformat(
-                            existing_financial["created_at"].replace("Z", "+00:00")
-                            if existing_financial["created_at"].endswith("Z")
-                            else existing_financial["created_at"]
+                    if existing_financial:
+                        last_update_value = self._safe_get_attribute(
+                            existing_financial, "last_update"
                         )
-                        time_since_update = datetime.now() - last_update
+                        if last_update_value:
+                            last_update = datetime.fromisoformat(
+                                last_update_value.replace("Z", "+00:00")
+                                if last_update_value.endswith("Z")
+                                else last_update_value
+                            )
+                            time_since_update = datetime.now() - last_update
 
-                        if time_since_update < quarterly_update_threshold:
-                            should_update_financial = False
-                            self.logger.debug(f"📊 {symbol} 财务数据最近已更新，跳过")
-                            symbol_skipped = True
+                            if time_since_update < quarterly_update_threshold:
+                                should_update_financial = False
+                                symbol_skipped = True
 
                     if should_update_financial:
-                        self.logger.debug(f"📥 获取 {symbol} 财务数据...")
                         financial_data = self.data_source_manager.get_fundamentals(
                             symbol, report_date, "Q4"
                         )
@@ -905,7 +964,6 @@ class SyncManager(BaseManager):
                                 )
                                 result["financials_count"] += 1
                                 symbol_success = True
-                                self.logger.debug(f"✅ {symbol} 财务数据更新成功")
                             except Exception as e:
                                 self.logger.warning(f"保存财务数据失败 {symbol}: {e}")
 
@@ -914,44 +972,56 @@ class SyncManager(BaseManager):
 
                 # 2. 增量同步估值数据
                 try:
-                    # 检查是否已有今日的估值数据
-                    existing_valuation = self.db_manager.fetchone(
-                        """
-                        SELECT created_at, date 
-                        FROM valuations 
-                        WHERE symbol = ? AND date = ?
-                        ORDER BY created_at DESC LIMIT 1  
-                    """,
-                        (symbol, str(target_date)),
-                    )
+                    # 使用缓存查询代替单独查询
+                    existing_valuation = valuation_cache.get(symbol)
 
                     should_update_valuation = True
-                    if existing_valuation and existing_valuation["created_at"]:
-                        last_update = datetime.fromisoformat(
-                            existing_valuation["created_at"].replace("Z", "+00:00")
-                            if existing_valuation["created_at"].endswith("Z")
-                            else existing_valuation["created_at"]
+                    if existing_valuation:
+                        last_update_value = self._safe_get_attribute(
+                            existing_valuation, "last_update"
                         )
-                        time_since_update = datetime.now() - last_update
+                        if last_update_value:
+                            last_update = datetime.fromisoformat(
+                                last_update_value.replace("Z", "+00:00")
+                                if last_update_value.endswith("Z")
+                                else last_update_value
+                            )
+                            time_since_update = datetime.now() - last_update
 
-                        if time_since_update < daily_update_threshold:
-                            should_update_valuation = False
-                            self.logger.debug(f"📈 {symbol} 估值数据今日已更新，跳过")
-                            symbol_skipped = True
+                            if time_since_update < daily_update_threshold:
+                                should_update_valuation = False
+                                symbol_skipped = True
 
                     if should_update_valuation:
-                        self.logger.debug(f"📥 获取 {symbol} 估值数据...")
                         valuation_data = self.data_source_manager.get_valuation_data(
                             symbol, target_date
                         )
 
-                        if (
-                            isinstance(valuation_data, dict)
-                            and "data" in valuation_data
-                        ):
-                            valuation_data = valuation_data["data"]
+                        # 统一处理返回数据格式
+                        processed_data = None
+                        if isinstance(valuation_data, dict):
+                            if "data" in valuation_data:
+                                processed_data = valuation_data["data"]
+                            elif "success" in valuation_data and valuation_data.get(
+                                "success"
+                            ):
+                                processed_data = valuation_data.get(
+                                    "data", valuation_data
+                                )
+                            else:
+                                processed_data = valuation_data
+                        else:
+                            processed_data = valuation_data
 
-                        if valuation_data and isinstance(valuation_data, dict):
+                        # 添加详细的调试信息（仅在DEBUG级别显示）
+                        if self.logger.isEnabledFor(logging.DEBUG):
+                            self.logger.debug(
+                                f"原始估值数据类型: {type(valuation_data)}"
+                            )
+                            self.logger.debug(f"原始估值数据内容: {valuation_data}")
+                            self.logger.debug(f"处理后估值数据: {processed_data}")
+
+                        if processed_data and isinstance(processed_data, dict):
                             # 将估值数据存储到数据库
                             try:
                                 self.db_manager.execute(
@@ -962,24 +1032,88 @@ class SyncManager(BaseManager):
                                 """,
                                     (
                                         symbol,
-                                        valuation_data.get("date", str(target_date)),
-                                        valuation_data.get("pe_ratio", 0),
-                                        valuation_data.get("pb_ratio", 0),
-                                        valuation_data.get("ps_ratio", 0),
-                                        valuation_data.get("pcf_ratio", 0),
-                                        valuation_data.get("market_cap", 0),
-                                        valuation_data.get("circulating_cap", 0),
+                                        processed_data.get("date", str(target_date)),
+                                        processed_data.get("pe_ratio", 0),
+                                        processed_data.get("pb_ratio", 0),
+                                        processed_data.get("ps_ratio", 0),
+                                        processed_data.get("pcf_ratio", 0),
+                                        processed_data.get("market_cap", 0),
+                                        processed_data.get("circulating_cap", 0),
                                         "processed_extended",
                                     ),
                                 )
                                 result["valuations_count"] += 1
                                 symbol_success = True
-                                self.logger.debug(f"✅ {symbol} 估值数据更新成功")
                             except Exception as e:
                                 self.logger.warning(f"保存估值数据失败 {symbol}: {e}")
 
+                        else:
+                            self.logger.warning(
+                                f"估值数据格式不正确或为空 {symbol}: processed_data={processed_data}"
+                            )
+
                 except Exception as e:
                     self.logger.warning(f"获取估值数据失败 {symbol}: {e}")
+                    import traceback
+
+                    self.logger.debug(f"估值数据获取异常详情: {traceback.format_exc()}")
+
+                # 3. 增量同步技术指标
+                try:
+                    # 使用缓存查询代替单独查询
+                    existing_indicators = indicators_cache.get(symbol)
+
+                    # 使用重构后的技术指标计算方法
+                    indicator_result = self._calculate_technical_indicators(
+                        symbol, target_date, indicator_calculator, existing_indicators
+                    )
+
+                    if indicator_result["success"]:
+                        # 保存技术指标到数据库
+                        try:
+                            latest_indicators = indicator_result["indicators"]
+                            self.db_manager.execute(
+                                """
+                                INSERT OR REPLACE INTO technical_indicators 
+                                (symbol, date, ma5, ma10, ma20, ma60, rsi_6, macd_dif, macd_dea, macd_histogram, boll_upper, boll_middle, boll_lower, calculated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                            """,
+                                (
+                                    symbol,
+                                    str(target_date),
+                                    latest_indicators.get("ma5", 0),
+                                    latest_indicators.get("ma10", 0),
+                                    latest_indicators.get("ma20", 0),
+                                    latest_indicators.get("ma60", 0),
+                                    latest_indicators.get("rsi", 0),
+                                    latest_indicators.get("macd", 0),
+                                    latest_indicators.get("macd_signal", 0),
+                                    latest_indicators.get("macd_histogram", 0),
+                                    latest_indicators.get("bollinger_upper", 0),
+                                    latest_indicators.get("bollinger_middle", 0),
+                                    latest_indicators.get("bollinger_lower", 0),
+                                ),
+                            )
+                            result["indicators_count"] += 1
+                            symbol_success = True
+                        except Exception as e:
+                            self.logger.warning(f"保存技术指标失败 {symbol}: {e}")
+                    else:
+                        # 根据失败原因调整日志级别
+                        message = indicator_result["message"]
+                        if message == "recently_updated":
+                            symbol_skipped = True
+                            self.logger.debug(f"跳过技术指标计算 {symbol}: 最近已更新")
+                        elif "历史数据不足" in message or "历史数据为空" in message:
+                            self.logger.debug(f"跳过技术指标计算 {symbol}: {message}")
+                        else:
+                            self.logger.debug(f"技术指标计算失败 {symbol}: {message}")
+
+                except Exception as e:
+                    self.logger.warning(f"计算技术指标失败 {symbol}: {e}")
+                    import traceback
+
+                    self.logger.debug(f"技术指标计算异常详情: {traceback.format_exc()}")
 
                 if symbol_success:
                     result["processed_symbols"] += 1
@@ -1207,3 +1341,165 @@ class SyncManager(BaseManager):
         except Exception as e:
             self._log_error("generate_sync_report", e)
             return f"报告生成失败: {e}"
+
+    def _safe_get_attribute(self, obj, key: str, default=None):
+        """安全获取对象属性，兼容dict和sqlite3.Row"""
+        if obj is None:
+            return default
+
+        try:
+            if hasattr(obj, "get"):
+                return obj.get(key, default)
+            elif hasattr(obj, "__getitem__"):
+                return obj[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
+        return default
+
+    def _calculate_technical_indicators(
+        self,
+        symbol: str,
+        target_date: date,
+        indicator_calculator,
+        existing_indicators: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        计算单个股票的技术指标
+
+        Args:
+            symbol: 股票代码
+            target_date: 目标日期
+            indicator_calculator: 技术指标计算器
+            existing_indicators: 已存在的指标数据
+
+        Returns:
+            Dict[str, Any]: 计算结果 {"success": bool, "indicators": dict, "message": str}
+        """
+        from datetime import datetime, timedelta
+
+        # 检查是否需要更新
+        daily_update_threshold = timedelta(days=1)
+        if existing_indicators:
+            try:
+                # 安全获取 last_update 字段，兼容 dict 和 sqlite3.Row
+                last_update_value = self._safe_get_attribute(
+                    existing_indicators, "last_update"
+                )
+
+                if last_update_value:
+                    last_update = datetime.fromisoformat(
+                        last_update_value.replace("Z", "+00:00")
+                        if last_update_value.endswith("Z")
+                        else last_update_value
+                    )
+                    if datetime.now() - last_update < daily_update_threshold:
+                        return {
+                            "success": False,
+                            "message": "recently_updated",
+                            "indicators": None,
+                        }
+            except Exception:
+                pass  # 如果解析时间失败，继续计算
+
+        # 获取历史数据
+        start_date = target_date - timedelta(days=100)
+        try:
+            historical_data = self.data_source_manager.get_daily_data(
+                symbol, start_date, target_date
+            )
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"获取历史数据失败: {e}",
+                "indicators": None,
+            }
+
+        # 处理历史数据格式
+        processed_data = self._process_historical_data(historical_data)
+        if not processed_data:
+            return {
+                "success": False,
+                "message": "历史数据为空或格式错误",
+                "indicators": None,
+            }
+
+        # 检查数据量是否足够
+        data_length = self._get_data_length(processed_data)
+        if data_length < 20:
+            return {
+                "success": False,
+                "message": f"历史数据不足({data_length}条)",
+                "indicators": None,
+            }
+
+        # 计算技术指标
+        try:
+            # 临时降低日志级别，避免干扰进度条
+            indicators_logger = logging.getLogger(
+                "simtradedata.preprocessor.indicators"
+            )
+            original_level = indicators_logger.level
+            indicators_logger.setLevel(logging.ERROR)
+
+            try:
+                indicators_data = indicator_calculator.calculate_indicators(
+                    processed_data, symbol
+                )
+            finally:
+                indicators_logger.setLevel(original_level)
+
+            if not indicators_data or not isinstance(indicators_data, dict):
+                return {
+                    "success": False,
+                    "message": "技术指标计算结果为空",
+                    "indicators": None,
+                }
+
+            # 提取最新指标值
+            latest_indicators = self._extract_latest_indicators(indicators_data)
+            if not latest_indicators:
+                return {
+                    "success": False,
+                    "message": "无法提取最新指标值",
+                    "indicators": None,
+                }
+
+            return {
+                "success": True,
+                "message": "计算成功",
+                "indicators": latest_indicators,
+            }
+
+        except Exception as e:
+            return {"success": False, "message": f"计算异常: {e}", "indicators": None}
+
+    def _process_historical_data(self, historical_data) -> Any:
+        """处理历史数据格式"""
+        if historical_data is None:
+            return None
+
+        if isinstance(historical_data, dict) and "data" in historical_data:
+            return historical_data["data"]
+
+        return historical_data
+
+    def _get_data_length(self, data) -> int:
+        """获取数据长度"""
+        if hasattr(data, "__len__"):
+            return len(data)
+        elif hasattr(data, "shape"):
+            return data.shape[0]
+        return 0
+
+    def _extract_latest_indicators(
+        self, indicators_data: Dict[str, Any]
+    ) -> Dict[str, float]:
+        """提取最新的指标值"""
+        latest_indicators = {}
+        for indicator_name, values in indicators_data.items():
+            if isinstance(values, (list, tuple)) and len(values) > 0:
+                latest_indicators[indicator_name] = values[-1]
+            elif isinstance(values, (int, float)):
+                latest_indicators[indicator_name] = values
+        return latest_indicators

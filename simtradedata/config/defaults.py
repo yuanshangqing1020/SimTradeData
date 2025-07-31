@@ -254,23 +254,23 @@ TECHNICAL_INDICATORS_CONFIG = {
     },
     "ema": {
         "periods": [12, 26],
-        "enabled": False,
+        "enabled": True,  # 启用EMA
     },
     "macd": {
         "fast_period": 12,
         "slow_period": 26,
         "signal_period": 9,
-        "enabled": False,
+        "enabled": True,  # 启用MACD
     },
     "rsi": {
         "period": 14,
-        "enabled": False,
+        "enabled": True,  # 启用RSI
     },
     "kdj": {
         "k_period": 9,
         "d_period": 3,
         "j_period": 3,
-        "enabled": False,
+        "enabled": True,  # 启用KDJ
     },
 }
 
