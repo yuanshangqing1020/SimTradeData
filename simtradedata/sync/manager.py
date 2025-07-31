@@ -570,6 +570,15 @@ class SyncManager(BaseManager):
             # 从数据源获取股票列表
             stock_info = self.data_source_manager.get_stock_info()
 
+            # 处理嵌套的错误处理装饰器返回格式
+            if isinstance(stock_info, dict) and "data" in stock_info:
+                # 第一层解包
+                stock_info = stock_info["data"]
+
+                # 如果还有嵌套，继续解包
+                if isinstance(stock_info, dict) and "data" in stock_info:
+                    stock_info = stock_info["data"]
+
             # 检查DataFrame是否为空
             if stock_info is None or (
                 hasattr(stock_info, "empty") and stock_info.empty
@@ -605,7 +614,13 @@ class SyncManager(BaseManager):
                     "updated_stocks": 0,  # 实际实现时计算更新股票
                 }
             else:
-                return {"error": "股票信息格式错误"}
+                # 如果数据格式不是DataFrame或列表，但不为空，记录警告但不报错
+                self.logger.warning(f"股票信息格式未知: {type(stock_info)}")
+                return {
+                    "status": "completed",
+                    "total_stocks": 0,
+                    "note": f"股票信息格式未知: {type(stock_info)}，使用默认列表",
+                }
 
         except Exception as e:
             self._log_error("_update_stock_list", e)

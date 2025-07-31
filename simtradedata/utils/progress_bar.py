@@ -9,13 +9,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, Optional
 
-try:
-    from tqdm import tqdm
-
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +26,7 @@ class SyncProgressBar:
         self.current_phase = None
         self.phase_progress_bars = {}
         self.start_time = None
+        self._progress_line_active = False
 
         # 如果禁用日志，设置日志级别为WARNING
         if disable_logs:
@@ -43,6 +37,11 @@ class SyncProgressBar:
                 "simtradedata.data_sources.manager",
                 "simtradedata.data_sources.baostock_adapter",
                 "simtradedata.data_sources.akshare_adapter",
+                "simtradedata.core.logging_mixin",
+                "simtradedata.config.manager",
+                "simtradedata.database.manager",
+                "simtradedata.data_sources.base",
+                "simtradedata.sync.validator",
                 "urllib3.connectionpool",
             ]
 
@@ -53,7 +52,7 @@ class SyncProgressBar:
     @contextmanager
     def phase_progress(
         self, phase_name: str, total: int, desc: str = None, unit: str = "item"
-    ) -> Iterator[Optional["tqdm"]]:
+    ) -> Iterator[Optional["SimpleProgress"]]:
         """
         创建阶段进度条
 
@@ -64,21 +63,27 @@ class SyncProgressBar:
             unit: 单位
 
         Yields:
-            tqdm进度条对象或None
+            SimpleProgress进度条对象
         """
         if desc is None:
             desc = phase_name
 
         self.current_phase = phase_name
 
-        # 总是使用简单的进度显示，避免tqdm的复杂性
+        # 创建简单的进度显示器
         progress = SimpleProgress(total, desc)
+        # 立即设置进度管理器引用
+        progress.progress_manager = self
         self.phase_progress_bars[phase_name] = progress
-        yield progress
 
-        # 清理
-        if phase_name in self.phase_progress_bars:
-            del self.phase_progress_bars[phase_name]
+        try:
+            yield progress
+        finally:
+            # 关闭进度条
+            progress.close()
+            # 清理
+            if phase_name in self.phase_progress_bars:
+                del self.phase_progress_bars[phase_name]
 
     def update_phase_description(self, desc: str):
         """更新当前阶段的描述"""
@@ -89,11 +94,13 @@ class SyncProgressBar:
 
     def log_phase_start(self, phase_name: str, desc: str = None):
         """记录阶段开始"""
+        self._clear_progress_line()
         if not self.disable_logs:
             logger.info(f"🚀 {phase_name}: {desc or '开始'}")
 
     def log_phase_complete(self, phase_name: str, stats: Dict[str, Any] = None):
         """记录阶段完成"""
+        self._clear_progress_line()
         if stats:
             stats_str = ", ".join([f"{k}={v}" for k, v in stats.items()])
             logger.info(f"✅ {phase_name}完成: {stats_str}")
@@ -102,15 +109,23 @@ class SyncProgressBar:
 
     def log_error(self, message: str):
         """记录错误（总是显示）"""
+        self._clear_progress_line()
         logger.error(f"❌ {message}")
 
     def log_warning(self, message: str):
         """记录警告（总是显示）"""
+        self._clear_progress_line()
         logger.warning(f"⚠️  {message}")
+
+    def _clear_progress_line(self):
+        """清除当前进度行"""
+        if self._progress_line_active:
+            print("\r" + " " * 100 + "\r", end="", flush=True)
+            self._progress_line_active = False
 
 
 class SimpleProgress:
-    """简单的进度显示器（当tqdm不可用时）"""
+    """进度显示器"""
 
     def __init__(self, total: int, desc: str = "Processing"):
         self.total = total
@@ -119,9 +134,16 @@ class SimpleProgress:
         self._last_reported = -1
         self.start_time = datetime.now()
 
+        # 引用全局进度条管理器（延迟引用）
+        self.progress_manager = None
+
     def update(self, n: int = 1):
         """更新进度"""
         self.current += n
+
+        # 延迟获取进度管理器引用
+        if self.progress_manager is None:
+            self.progress_manager = globals().get("sync_progress")
 
         # 每10%或每5个项目报告一次进度
         percentage = (self.current / self.total) * 100
@@ -129,7 +151,8 @@ class SimpleProgress:
 
         should_report = (
             (report_threshold > self._last_reported and report_threshold % 10 == 0)
-            or (self.current % 5 == 0)
+            or (self.current % 5 == 0 and self.current <= 10)  # 前10个项目每5个报告一次
+            or (self.current % 50 == 0 and self.current > 10)  # 之后每50个报告一次
             or (self.current == self.total)  # 总是报告完成
         )
 
@@ -153,11 +176,16 @@ class SimpleProgress:
             filled_length = int(bar_length * percentage / 100)
             bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-            print(
-                f"\r{self.desc}: [{bar}] {percentage:5.1f}% ({self.current}/{self.total}) 剩余:{remaining_str}    ",
-                end="",
-                flush=True,
-            )
+            # 确保在新行上输出进度
+            progress_line = f"{self.desc}: [{bar}] {percentage:5.1f}% ({self.current}/{self.total}) 剩余:{remaining_str}"
+
+            # 清除之前的进度行并输出新的进度
+            print(f"\r{progress_line:<100}", end="", flush=True)
+
+            # 标记进度行处于活跃状态
+            if self.progress_manager:
+                self.progress_manager._progress_line_active = True
+
             self._last_reported = report_threshold
 
     def set_description(self, desc: str):
@@ -167,11 +195,16 @@ class SimpleProgress:
     def close(self):
         """关闭进度条"""
         elapsed = datetime.now() - self.start_time
+        # 清除当前进度行
+        print(f"\r{' ' * 100}\r", end="", flush=True)
+        # 输出完成信息到新行
         print(
-            f"\r✅ {self.desc}: 完成 {self.current}/{self.total} [耗时: {elapsed.total_seconds():.1f}s]"
-            + " " * 30
+            f"✅ {self.desc}: 完成 {self.current}/{self.total} [耗时: {elapsed.total_seconds():.1f}s]"
         )
-        print()  # 换行，为下一个进度条做准备
+
+        # 重置进度行状态
+        if self.progress_manager:
+            self.progress_manager._progress_line_active = False
 
 
 # 全局进度条管理器实例
