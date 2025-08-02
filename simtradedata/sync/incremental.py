@@ -66,6 +66,32 @@ class IncrementalSync:
 
         logger.info("增量同步器初始化完成")
 
+    def _extract_data_safely(self, data: Any) -> Any:
+        """
+        统一的数据格式处理方法，避免多次拆包
+
+        Args:
+            data: 可能被包装的数据
+
+        Returns:
+            Any: 拆包后的实际数据
+        """
+        # 如果是标准成功响应格式 {"success": True, "data": ..., "count": ...}
+        if isinstance(data, dict) and "success" in data:
+            if data.get("success"):
+                return data.get("data")
+            else:
+                # 失败响应，返回空字典
+                return {}
+
+        # 如果是简单包装格式 {"data": ...} (没有success字段)
+        elif isinstance(data, dict) and "data" in data and "success" not in data:
+            return data["data"]
+
+        # 否则直接返回原数据
+        else:
+            return data
+
     def sync_all_symbols(
         self,
         target_date: date = None,
@@ -514,12 +540,8 @@ class IncrementalSync:
                     symbol, start_date, end_date, frequency, force_update=True
                 )
 
-                # 解析嵌套的返回结果格式
-                actual_result = process_result
-                if isinstance(process_result, dict) and "data" in process_result:
-                    actual_result = process_result["data"]
-                    if isinstance(actual_result, dict) and "data" in actual_result:
-                        actual_result = actual_result["data"]
+                # 统一数据格式处理 - 避免多次拆包
+                actual_result = self._extract_data_safely(process_result)
 
                 # 统计结果
                 result["success_count"] = len(actual_result.get("processed_dates", []))

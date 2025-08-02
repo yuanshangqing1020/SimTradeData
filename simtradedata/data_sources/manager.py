@@ -104,6 +104,32 @@ class DataSourceManager(BaseManager):
                         "last_error": str(e),
                     }
 
+    def _extract_data_safely(self, data: Any) -> Any:
+        """
+        统一的数据格式处理方法，避免多次拆包
+
+        Args:
+            data: 可能被包装的数据
+
+        Returns:
+            Any: 拆包后的实际数据
+        """
+        # 如果是标准成功响应格式 {"success": True, "data": ..., "count": ...}
+        if isinstance(data, dict) and "success" in data:
+            if data.get("success"):
+                return data.get("data")
+            else:
+                # 失败响应，返回空列表或None
+                return []
+
+        # 如果是简单包装格式 {"data": ...} (没有success字段)
+        elif isinstance(data, dict) and "data" in data and "success" not in data:
+            return data["data"]
+
+        # 否则直接返回原数据
+        else:
+            return data
+
     def get_source(self, source_name: str) -> Optional[BaseDataSource]:
         """
         获取数据源实例
@@ -251,11 +277,7 @@ class DataSourceManager(BaseManager):
             market = self._parse_market_from_symbol(symbol)
 
         priorities_result = self.get_source_priorities(market, "1d", "ohlcv")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_daily_data", priorities, symbol, start_date, end_date
@@ -292,11 +314,7 @@ class DataSourceManager(BaseManager):
             market = self._parse_market_from_symbol(symbol)
 
         priorities_result = self.get_source_priorities(market, frequency, "ohlcv")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_minute_data", priorities, symbol, trade_date, frequency
@@ -353,11 +371,7 @@ class DataSourceManager(BaseManager):
             market = self._parse_market_from_symbol(symbol)
 
         priorities_result = self.get_source_priorities(market, "1d", "fundamentals")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_fundamentals", priorities, symbol, report_date, report_type
@@ -376,11 +390,7 @@ class DataSourceManager(BaseManager):
             raise ValidationError("开始日期不能为空")
 
         priorities_result = self.get_source_priorities(market, "1d", "calendar")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_trade_calendar", priorities, start_date, end_date
@@ -406,11 +416,7 @@ class DataSourceManager(BaseManager):
             market = self._parse_market_from_symbol(symbol)
 
         priorities_result = self.get_source_priorities(market, "1d", "adjustment")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_adjustment_data", priorities, symbol, start_date, end_date
@@ -432,11 +438,7 @@ class DataSourceManager(BaseManager):
             market = self._parse_market_from_symbol(symbol)
 
         priorities_result = self.get_source_priorities(market, "1d", "valuation")
-        priorities = (
-            priorities_result["data"]
-            if isinstance(priorities_result, dict)
-            else priorities_result
-        )
+        priorities = self._extract_data_safely(priorities_result)
 
         fallback_result = self.get_data_with_fallback(
             "get_valuation_data", priorities, symbol, trade_date

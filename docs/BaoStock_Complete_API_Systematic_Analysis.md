@@ -85,12 +85,14 @@ class BaoStockDataFetcher:
             adjustflag="3"  # 不复权
         )
         
-        # 处理结果
-        data_list = []
-        while (rs.error_code == '0') & rs.next():
-            data_list.append(rs.get_row_data())
+        # 正确的处理方式：直接使用get_data()获取DataFrame
+        df = rs.get_data()
         
-        return self._convert_to_dataframe(data_list)
+        if rs.error_code != '0':
+            logger.error(f"BaoStock查询失败: {rs.error_msg}")
+            return pd.DataFrame()
+            
+        return df
     
     def get_financial_data(self, symbol, year, quarter):
         """获取财务数据"""

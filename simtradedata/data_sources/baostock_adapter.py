@@ -164,8 +164,8 @@ class BaoStockAdapter(BaseDataSource):
                 logger.error(f"BaoStock返回空列DataFrame: {bs_symbol}")
                 return {}
 
-            # 直接返回DataFrame
-            return df
+            # 转换DataFrame为符合接口规范的字典格式
+            return self._convert_daily_data(df, symbol)
 
         # 使用重试机制处理网络错误
         return self._retry_request(_fetch_data)
@@ -617,3 +617,62 @@ class BaoStockAdapter(BaseDataSource):
             }
         )
         return capabilities
+
+    def _convert_daily_data(self, df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
+        """
+        将BaoStock返回的DataFrame转换为符合接口规范的字典格式
+
+        基于实际测试：BaoStock的rs.get_data()返回pandas DataFrame，
+        需要转换为与其他适配器一致的格式：{"success": bool, "data": list, "count": int}
+        """
+        if df is None or df.empty:
+            return {"success": False, "data": None, "error": "数据为空"}
+
+        try:
+            records = []
+            for _, row in df.iterrows():
+                # 安全的数值转换函数
+                def safe_float(value, default=0.0):
+                    if pd.isna(value) or value == "" or value is None:
+                        return default
+                    try:
+                        return float(value)
+                    except (ValueError, TypeError):
+                        return default
+
+                # 转换为标准记录格式，保留BaoStock的所有字段
+                record = {
+                    "symbol": symbol,
+                    "date": str(row.get("date", "")),
+                    "open": safe_float(row.get("open")),
+                    "high": safe_float(row.get("high")),
+                    "low": safe_float(row.get("low")),
+                    "close": safe_float(row.get("close")),
+                    "preclose": safe_float(row.get("preclose")),
+                    "volume": safe_float(row.get("volume")),
+                    "amount": safe_float(row.get("amount")),
+                    "adjustflag": str(row.get("adjustflag", "")),
+                    "turn": safe_float(row.get("turn")),
+                    "tradestatus": str(row.get("tradestatus", "")),
+                    "pctChg": safe_float(row.get("pctChg")),
+                    "peTTM": safe_float(row.get("peTTM")),
+                    "pbMRQ": safe_float(row.get("pbMRQ")),
+                    "psTTM": safe_float(row.get("psTTM")),
+                    "pcfNcfTTM": safe_float(row.get("pcfNcfTTM")),
+                    "isST": str(row.get("isST", "")),
+                }
+
+                # 基本数据验证
+                if (
+                    record["open"] > 0
+                    and record["high"] > 0
+                    and record["low"] > 0
+                    and record["close"] > 0
+                ):
+                    records.append(record)
+
+            return {"success": True, "data": records, "count": len(records)}
+
+        except Exception as e:
+            logger.error(f"转换BaoStock DataFrame失败: {e}")
+            return {"success": False, "data": None, "error": str(e)}

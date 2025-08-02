@@ -131,11 +131,23 @@ class DataProcessingEngine(BaseManager):
                 self.logger.error(f"检查数据格式时出错: {e}")
                 raise
 
-            # 处理嵌套的装饰器返回格式
-            if isinstance(raw_data, dict) and "data" in raw_data:
-                raw_data = raw_data["data"]
-                if isinstance(raw_data, dict) and "data" in raw_data:
+            # 统一数据格式处理 - 避免多次拆包
+            # 如果数据源返回的是标准格式 {"success": bool, "data": ..., "count": int}
+            if (
+                isinstance(raw_data, dict)
+                and "success" in raw_data
+                and raw_data.get("success")
+            ):
+                if "data" in raw_data:
                     raw_data = raw_data["data"]
+            # 如果是简单的包装格式 {"data": ...}（没有success字段）
+            elif (
+                isinstance(raw_data, dict)
+                and "data" in raw_data
+                and "success" not in raw_data
+            ):
+                raw_data = raw_data["data"]
+            # 否则直接使用原始数据
 
             self.logger.debug(f"处理后数据类型: {type(raw_data)}")
             try:

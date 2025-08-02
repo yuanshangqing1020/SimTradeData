@@ -360,29 +360,40 @@ DATABASE_INDEXES = {
     "idx_stocks_market": "CREATE INDEX idx_stocks_market ON stocks(market, status)",
     "idx_stocks_industry": "CREATE INDEX idx_stocks_industry ON stocks(industry_l1, industry_l2)",
     "idx_stocks_list_date": "CREATE INDEX idx_stocks_list_date ON stocks(list_date)",
+    "idx_stocks_status": "CREATE INDEX idx_stocks_status ON stocks(status)",  # 新增：活跃股票查询优化
     # 行情数据索引
     "idx_market_data_symbol_date": "CREATE INDEX idx_market_data_symbol_date ON market_data(symbol, date DESC)",
     "idx_market_data_date_freq": "CREATE INDEX idx_market_data_date_freq ON market_data(date DESC, frequency)",
     "idx_market_data_symbol_freq": "CREATE INDEX idx_market_data_symbol_freq ON market_data(symbol, frequency, date DESC)",
     "idx_market_data_source": "CREATE INDEX idx_market_data_source ON market_data(source, quality_score)",
+    "idx_market_data_created_at": "CREATE INDEX idx_market_data_created_at ON market_data(created_at DESC)",  # 新增：最近数据查询优化
     # 估值指标索引
     "idx_valuations_symbol_date": "CREATE INDEX idx_valuations_symbol_date ON valuations(symbol, date DESC)",
     "idx_valuations_date": "CREATE INDEX idx_valuations_date ON valuations(date DESC)",
+    "idx_valuations_created_at": "CREATE INDEX idx_valuations_created_at ON valuations(created_at DESC)",  # 新增：最近数据查询优化
     # 技术指标索引
     "idx_technical_symbol_freq_date": "CREATE INDEX idx_technical_symbol_freq_date ON technical_indicators(symbol, frequency, date DESC)",
+    "idx_technical_created_at": "CREATE INDEX idx_technical_created_at ON technical_indicators(calculated_at DESC)",  # 新增：最近计算指标查询
     # 财务数据索引
     "idx_financials_symbol_date": "CREATE INDEX idx_financials_symbol_date ON financials(symbol, report_date DESC)",
     "idx_financials_report_date": "CREATE INDEX idx_financials_report_date ON financials(report_date DESC, report_type)",
+    "idx_financials_created_at": "CREATE INDEX idx_financials_created_at ON financials(created_at DESC)",  # 新增：最近财务数据查询优化
+    "idx_financials_symbol_report": "CREATE INDEX idx_financials_symbol_report ON financials(symbol, report_date, report_type)",  # 新增：复合查询优化
     # 数据质量索引
     "idx_data_quality_source": "CREATE INDEX idx_data_quality_source ON data_source_quality(source_name, data_type, date DESC)",
     "idx_data_quality_symbol": "CREATE INDEX idx_data_quality_symbol ON data_source_quality(symbol, source_name)",
     # 同步状态索引
     "idx_sync_status_date": "CREATE INDEX idx_sync_status_date ON sync_status(last_sync_date DESC)",
     "idx_sync_status_status": "CREATE INDEX idx_sync_status_status ON sync_status(status, next_sync_date)",
-    # 扩展数据同步状态索引
+    # 扩展数据同步状态索引 - 关键性能优化
     "idx_extended_sync_symbol_date": "CREATE INDEX idx_extended_sync_symbol_date ON extended_sync_status(symbol, target_date DESC)",
     "idx_extended_sync_status": "CREATE INDEX idx_extended_sync_status ON extended_sync_status(status, phase)",
     "idx_extended_sync_session": "CREATE INDEX idx_extended_sync_session ON extended_sync_status(session_id, updated_at DESC)",
+    "idx_extended_sync_target_status": "CREATE INDEX idx_extended_sync_target_status ON extended_sync_status(target_date, status)",  # 新增：关键优化
+    "idx_extended_sync_symbol_status": "CREATE INDEX idx_extended_sync_symbol_status ON extended_sync_status(symbol, status, target_date)",  # 新增：复合查询优化
+    # 交易日历索引优化
+    "idx_trading_calendar_date": "CREATE INDEX idx_trading_calendar_date ON trading_calendar(date DESC)",  # 新增：日期查询优化
+    "idx_trading_calendar_market_date": "CREATE INDEX idx_trading_calendar_market_date ON trading_calendar(market, date DESC)",  # 新增：市场日期复合查询
 }
 
 
