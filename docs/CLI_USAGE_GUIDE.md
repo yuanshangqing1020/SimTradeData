@@ -43,185 +43,181 @@ poetry run python -m pytest tests/test_database.py -v
 ### 数据同步命令
 
 ```bash
-# 全量同步
-poetry run python -m simtradedata sync --type full --date 2024-01-24
+# 全量同步 - 同步指定日期的所有数据
+poetry run python -m simtradedata full-sync --target-date 2024-01-24
 
-# 增量同步
-poetry run python -m simtradedata sync --type incremental --date 2024-01-24
+# 全量同步 - 同步指定股票
+poetry run python -m simtradedata full-sync --symbols 000001.SZ 000002.SZ
 
-# 同步指定股票
-poetry run python -m simtradedata full-sync --symbols 000001.SZ,000002.SZ
+# 全量同步 - 同步所有股票
+poetry run python -m simtradedata full-sync --all-stocks
 
-# 同步指定频率
-poetry run python -m simtradedata full-sync --frequencies 1d,1h
+# 全量同步 - 指定多个频率
+poetry run python -m simtradedata full-sync --frequencies 1d 1h
+
+# 增量同步 - 指定日期范围
+poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-31
+
+# 增量同步 - 指定股票和频率
+poetry run python -m simtradedata incremental --start-date 2024-01-01 --symbols 000001.SZ --frequency 1d
 ```
 
-### 数据查询命令
+### 缺口检测和修复命令
 
 ```bash
-# 查询股票信息
-poetry run python -m simtradedata query stocks --symbol 000001.SZ
+# 缺口检测和修复 - 指定日期范围
+poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date 2024-01-31
 
-# 查询历史数据
-poetry run python -m simtradedata query history --symbol 000001.SZ --start 2024-01-01 --end 2024-01-31
+# 缺口修复 - 指定股票
+poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --symbols 000001.SZ 000002.SZ
 
-# 查询技术指标
-poetry run python -m simtradedata query indicators --symbol 000001.SZ --date 2024-01-24
+# 缺口修复 - 指定频率
+poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --frequencies 1d 1h
 ```
 
-### 数据库管理命令
+### 断点续传命令
 
 ```bash
-# 检查数据库状态
-poetry run python -m simtradedata db status
+# 断点续传 - 恢复指定股票的同步
+poetry run python -m simtradedata resume --symbol 000001.SZ
 
-# 验证数据完整性
-poetry run python -m simtradedata db validate
-
-# 清理数据库
-poetry run python -m simtradedata db cleanup --days 30
-
-# 备份数据库
-poetry run python -m simtradedata db backup --output backup.db
+# 断点续传 - 指定频率
+poetry run python -m simtradedata resume --symbol 000001.SZ --frequency 1d
 ```
 
-### 缺口检测和修复
+### 状态查询命令
 
 ```bash
-# 检测数据缺口
-poetry run python -m simtradedata gaps detect --start 2024-01-01 --end 2024-01-31
-
-# 修复数据缺口
-poetry run python -m simtradedata gaps fix --symbol 000001.SZ --date 2024-01-24
-
-# 批量修复缺口
-poetry run python -m simtradedata gaps fix-all --max-days 7
-```
-
-### 监控和诊断
-
-```bash
-# 系统状态检查
-poetry run python -m simtradedata monitor status
-
-# 性能分析
-poetry run python -m simtradedata monitor performance
-
-# 数据质量检查
-poetry run python -m simtradedata monitor quality --symbol 000001.SZ
+# 查看当前同步状态
+poetry run python -m simtradedata status
 ```
 
 ## 🔧 配置选项
 
-### 全局配置
+### 命令行参数
+
+所有命令都支持以下全局参数：
 
 ```bash
-# 设置数据库路径
-poetry run python -m simtradedata config set database.path /path/to/database.db
+# 指定数据库路径
+poetry run python -m simtradedata full-sync --db-path /path/to/database.db
 
-# 设置日志级别
-poetry run python -m simtradedata config set logging.level DEBUG
+# 指定配置文件路径
+poetry run python -m simtradedata full-sync --config /path/to/config.yaml
 
-# 查看当前配置
-poetry run python -m simtradedata config show
+# 启用详细输出
+poetry run python -m simtradedata full-sync --verbose
+
+# 安静模式（最小化输出）
+poetry run python -m simtradedata full-sync --quiet
+
+# 禁用进度条
+poetry run python -m simtradedata full-sync --no-progress
 ```
 
-### 数据源配置
+### 配置文件示例
 
-```bash
-# 启用数据源
-poetry run python -m simtradedata config set data_sources.baostock.enabled true
+创建 `config.yaml` 配置文件：
 
-# 设置数据源优先级
-poetry run python -m simtradedata config set source_priorities.SZ_1d_ohlcv baostock,akshare
+```yaml
+database:
+  path: "data/simtradedata.db"
+
+data_sources:
+  akshare:
+    enabled: true
+    priority: 1
+  baostock:
+    enabled: true
+    priority: 2
+
+logging:
+  level: "INFO"
+  file: "logs/simtradedata.log"
 ```
 
-## 📊 输出格式
+## 🔍 实际用法示例
 
-### JSON 输出
+### 基本工作流程
 
 ```bash
-# 输出为JSON格式
-poetry run python -m simtradedata query stocks --symbol 000001.SZ --format json
+# 1. 创建数据库
+poetry run python scripts/init_database.py --db-path data/simtradedata.db
 
-# 保存到文件
-poetry run python -m simtradedata query history --symbol 000001.SZ --output data.json
+# 2. 全量同步今日数据
+poetry run python -m simtradedata full-sync
+
+# 3. 同步指定股票的历史数据
+poetry run python -m simtradedata full-sync --symbols 000001.SZ 000002.SZ --target-date 2024-01-01
+
+# 4. 增量更新最近一周数据
+poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-07
+
+# 5. 修复数据缺口
+poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date 2024-01-31
+
+# 6. 查看同步状态
+poetry run python -m simtradedata status
 ```
 
-### CSV 输出
+### 高级使用场景
 
 ```bash
-# 输出为CSV格式
-poetry run python -m simtradedata query history --symbol 000001.SZ --format csv
+# 从文件读取股票代码
+poetry run python -m simtradedata full-sync --symbols-file symbols.txt
 
-# 保存到文件
-poetry run python -m simtradedata query history --symbol 000001.SZ --output data.csv
-```
+# 多频率同步
+poetry run python -m simtradedata full-sync --frequencies 1d 1h 5m
 
-## 🔍 高级用法
+# 断点续传（恢复中断的同步）
+poetry run python -m simtradedata resume --symbol 000001.SZ --frequency 1d
 
-### 批处理脚本
+# 详细日志模式
+poetry run python -m simtradedata full-sync --verbose
 
-```bash
-# 创建批处理配置文件
-cat > batch_sync.yaml << EOF
-symbols:
-  - 000001.SZ
-  - 000002.SZ
-  - 600000.SS
-frequencies:
-  - 1d
-  - 1h
-date_range:
-  start: 2024-01-01
-  end: 2024-01-31
-EOF
-
-# 执行批处理
-poetry run python -m simtradedata batch --config batch_sync.yaml
-```
-
-### 定时任务
-
-```bash
-# 设置每日同步任务
-poetry run python -m simtradedata schedule add daily-sync \
-  --command "sync --type incremental" \
-  --time "09:00"
-
-# 查看定时任务
-poetry run python -m simtradedata schedule list
-
-# 删除定时任务
-poetry run python -m simtradedata schedule remove daily-sync
+# 静默模式（用于定时任务）
+poetry run python -m simtradedata incremental --start-date 2024-01-01 --quiet
 ```
 
 ## 🚨 故障排除
 
-### 常见问题
+### 常见问题和解决方案
 
 ```bash
-# 检查数据源连接
-poetry run python -m simtradedata diagnose sources
+# 1. 检查数据库是否正确初始化
+ls -la data/simtradedata.db
 
-# 检查数据库连接
-poetry run python -m simtradedata diagnose database
+# 2. 验证配置文件语法
+python -c "import yaml; yaml.safe_load(open('config.yaml'))"
 
-# 生成诊断报告
-poetry run python -m simtradedata diagnose all --output diagnosis.txt
+# 3. 测试数据源连接
+poetry run python -c "from simtradedata.data_sources import DataSourceManager; dsm = DataSourceManager(); print('数据源初始化成功')"
+
+# 4. 检查依赖安装
+poetry install --sync
+
+# 5. 运行基础测试
+poetry run python -m pytest tests/ -v -x
 ```
 
-### 日志分析
+### 日志文件位置
+
+- **应用日志**: `logs/simtradedata.log` (如果配置了)
+- **Poetry日志**: 使用 `poetry run` 时的标准输出
+- **系统日志**: 使用 `--verbose` 参数查看详细信息
+
+### 性能建议
 
 ```bash
-# 查看错误日志
-poetry run python -m simtradedata logs error --lines 50
+# 1. 对于大量数据，建议分批同步
+poetry run python -m simtradedata full-sync --symbols 000001.SZ --target-date 2024-01-01
+poetry run python -m simtradedata full-sync --symbols 000002.SZ --target-date 2024-01-01
 
-# 搜索特定错误
-poetry run python -m simtradedata logs search "connection failed"
+# 2. 使用增量同步减少数据量
+poetry run python -m simtradedata incremental --start-date 2024-01-01 --end-date 2024-01-07
 
-# 导出日志
-poetry run python -m simtradedata logs export --start 2024-01-01 --output logs.txt
+# 3. 定期运行缺口修复
+poetry run python -m simtradedata gap-fix --start-date 2024-01-01 --end-date $(date +%Y-%m-%d)
 ```
 
 ## 📚 更多信息
