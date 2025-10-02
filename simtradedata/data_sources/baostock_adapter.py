@@ -187,13 +187,14 @@ class BaoStockAdapter(BaseDataSource):
         raise NotImplementedError("BaoStock不支持分钟线数据")
 
     def get_stock_info(
-        self, symbol: str = None
+        self, symbol: str = None, target_date: str = None
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """
         获取股票基础信息
 
         Args:
             symbol: 股票代码，为None时返回所有股票
+            target_date: 目标日期（YYYY-MM-DD），用于查询指定日期的股票列表（避免幸存者偏差）
 
         Returns:
             Union[Dict, List[Dict]]: 股票信息
@@ -262,8 +263,21 @@ class BaoStockAdapter(BaseDataSource):
 
                 return basic_info
             else:
-                # 获取所有股票列表
-                rs = self._baostock.query_all_stock()
+                # 获取所有股票列表（支持指定日期，避免幸存者偏差）
+                if target_date:
+                    # 使用指定日期查询（确保获取该日期的真实股票列表）
+                    query_date = target_date
+                    logger.debug(f"查询指定日期的股票列表: {query_date}")
+                else:
+                    # 使用最近的日期确保能获取到数据
+                    from datetime import datetime, timedelta
+
+                    query_date = (datetime.now() - timedelta(days=1)).strftime(
+                        "%Y-%m-%d"
+                    )
+                    logger.debug(f"查询最近日期的股票列表: {query_date}")
+
+                rs = self._baostock.query_all_stock(day=query_date)
                 df = rs.get_data()
                 return self._convert_stock_list(df)
 
@@ -506,33 +520,44 @@ class BaoStockAdapter(BaseDataSource):
 
         return self._retry_request(_fetch_data)
 
-    def get_valuation_data(
-        self,
-        symbol: str,
-        trade_date: Union[str, date],
-    ) -> Dict[str, Any]:
-        """获取估值数据（从K线数据中提取，并计算市值）"""
+    def query_profit_data(self, symbol: str, year: int, quarter: int) -> Dict[str, Any]:
+        """
+        获取季频盈利能力数据
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 盈利能力数据,
+                "error": str 错误信息 (可选)
+            }
+        """
         if not self.is_connected():
             self.connect()
 
         symbol = self._normalize_symbol(symbol)
-        trade_date = self._normalize_date(trade_date)
 
         def _fetch_data():
             try:
                 bs_symbol = self._convert_to_baostock_symbol(symbol)
-
-                # 获取包含估值数据的K线数据
-                rs = self._baostock.query_history_k_data_plus(
-                    bs_symbol,
-                    "date,code,close,peTTM,pbMRQ,psTTM,pcfNcfTTM",
-                    start_date=trade_date,
-                    end_date=trade_date,
-                    frequency="d",
-                    adjustflag="3",
+                logger.info(
+                    f"查询盈利能力数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
                 )
 
-                # 直接使用get_data()获取DataFrame
+                # 调用BaoStock API
+                rs = self._baostock.query_profit_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 盈利能力查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询盈利能力数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
                 df = rs.get_data()
 
                 if df.empty:
@@ -541,19 +566,305 @@ class BaoStockAdapter(BaseDataSource):
                 # 清理DataFrame中的空字符串
                 df = df.replace("", None)
 
-                # 取最新一条记录
-                latest = df.iloc[-1]
+                # 取第一条记录(通常只有一条)
+                record = df.iloc[0]
 
-                # 获取股本数据用于计算市值
-                share_data = self._get_share_data(bs_symbol, trade_date)
-
-                return self._convert_valuation_data(
-                    latest, symbol, trade_date, share_data
-                )
+                return self._convert_profit_data(record, symbol)
 
             except Exception as e:
-                logger.error(f"BaoStock获取估值数据失败 {symbol}: {e}")
-                raise DataSourceDataError(f"获取估值数据失败: {e}")
+                logger.error(f"查询盈利能力数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询盈利能力数据失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def query_operation_data(
+        self, symbol: str, year: int, quarter: int
+    ) -> Dict[str, Any]:
+        """
+        获取季频营运能力数据 (100%覆盖operating_ability)
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 营运能力数据,
+                "error": str 错误信息 (可选)
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        symbol = self._normalize_symbol(symbol)
+
+        def _fetch_data():
+            try:
+                bs_symbol = self._convert_to_baostock_symbol(symbol)
+                logger.info(
+                    f"查询营运能力数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
+                )
+
+                # 调用BaoStock API
+                rs = self._baostock.query_operation_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 营运能力查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询营运能力数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
+                df = rs.get_data()
+
+                if df.empty:
+                    return {}
+
+                # 清理DataFrame中的空字符串
+                df = df.replace("", None)
+
+                # 取第一条记录
+                record = df.iloc[0]
+
+                return self._convert_operation_data(record, symbol)
+
+            except Exception as e:
+                logger.error(f"查询营运能力数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询营运能力数据失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def query_growth_data(self, symbol: str, year: int, quarter: int) -> Dict[str, Any]:
+        """
+        获取季频成长能力数据
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 成长能力数据,
+                "error": str 错误信息 (可选)
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        symbol = self._normalize_symbol(symbol)
+
+        def _fetch_data():
+            try:
+                bs_symbol = self._convert_to_baostock_symbol(symbol)
+                logger.info(
+                    f"查询成长能力数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
+                )
+
+                # 调用BaoStock API
+                rs = self._baostock.query_growth_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 成长能力查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询成长能力数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
+                df = rs.get_data()
+
+                if df.empty:
+                    return {}
+
+                # 清理DataFrame中的空字符串
+                df = df.replace("", None)
+
+                # 取第一条记录
+                record = df.iloc[0]
+
+                return self._convert_growth_data(record, symbol)
+
+            except Exception as e:
+                logger.error(f"查询成长能力数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询成长能力数据失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def query_balance_data(
+        self, symbol: str, year: int, quarter: int
+    ) -> Dict[str, Any]:
+        """
+        获取季频偿债能力数据
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 偿债能力数据,
+                "error": str 错误信息 (可选)
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        symbol = self._normalize_symbol(symbol)
+
+        def _fetch_data():
+            try:
+                bs_symbol = self._convert_to_baostock_symbol(symbol)
+                logger.info(
+                    f"查询偿债能力数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
+                )
+
+                # 调用BaoStock API
+                rs = self._baostock.query_balance_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 偿债能力查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询偿债能力数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
+                df = rs.get_data()
+
+                if df.empty:
+                    return {}
+
+                # 清理DataFrame中的空字符串
+                df = df.replace("", None)
+
+                # 取第一条记录
+                record = df.iloc[0]
+
+                return self._convert_balance_data(record, symbol)
+
+            except Exception as e:
+                logger.error(f"查询偿债能力数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询偿债能力数据失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def query_cash_flow_data(
+        self, symbol: str, year: int, quarter: int
+    ) -> Dict[str, Any]:
+        """
+        获取季频现金流量数据
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 现金流量数据,
+                "error": str 错误信息 (可选)
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        symbol = self._normalize_symbol(symbol)
+
+        def _fetch_data():
+            try:
+                bs_symbol = self._convert_to_baostock_symbol(symbol)
+                logger.info(
+                    f"查询现金流量数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
+                )
+
+                # 调用BaoStock API
+                rs = self._baostock.query_cash_flow_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 现金流量查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询现金流量数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
+                df = rs.get_data()
+
+                if df.empty:
+                    return {}
+
+                # 清理DataFrame中的空字符串
+                df = df.replace("", None)
+
+                # 取第一条记录
+                record = df.iloc[0]
+
+                return self._convert_cash_flow_data(record, symbol)
+
+            except Exception as e:
+                logger.error(f"查询现金流量数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询现金流量数据失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def query_dupont_data(self, symbol: str, year: int, quarter: int) -> Dict[str, Any]:
+        """
+        获取季频杜邦指数数据
+
+        Args:
+            symbol: 标准化股票代码 (如 "000001.SZ")
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+
+        Returns:
+            {
+                "success": True/False,
+                "data": Dict 杜邦指数数据,
+                "error": str 错误信息 (可选)
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        symbol = self._normalize_symbol(symbol)
+
+        def _fetch_data():
+            try:
+                bs_symbol = self._convert_to_baostock_symbol(symbol)
+                logger.info(
+                    f"查询杜邦指数数据: {symbol} ({bs_symbol}), {year}年第{quarter}季度"
+                )
+
+                # 调用BaoStock API
+                rs = self._baostock.query_dupont_data(
+                    code=bs_symbol, year=year, quarter=quarter
+                )
+
+                if rs.error_code != "0":
+                    logger.error(f"BaoStock 杜邦指数查询失败: {rs.error_msg}")
+                    raise DataSourceDataError(f"查询杜邦指数数据失败: {rs.error_msg}")
+
+                # 使用get_data()获取DataFrame
+                df = rs.get_data()
+
+                if df.empty:
+                    return {}
+
+                # 清理DataFrame中的空字符串
+                df = df.replace("", None)
+
+                # 取第一条记录
+                record = df.iloc[0]
+
+                return self._convert_dupont_data(record, symbol)
+
+            except Exception as e:
+                logger.error(f"查询杜邦指数数据失败 {symbol}: {e}")
+                raise DataSourceDataError(f"查询杜邦指数数据失败: {e}")
 
         return self._retry_request(_fetch_data)
 
@@ -843,6 +1154,194 @@ class BaoStockAdapter(BaseDataSource):
             "liquid_shares": liquid_shares,
             "asset_to_equity": asset_to_equity,
             "liability_to_asset": liability_to_asset,
+            "source": "baostock",
+        }
+
+    def _convert_profit_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换盈利能力数据格式"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "roe_avg": safe_float(record.get("roeAvg")),  # 净资产收益率(平均)
+            "np_margin": safe_float(record.get("npMargin")),  # 销售净利率
+            "gp_margin": safe_float(record.get("gpMargin")),  # 销售毛利率
+            "net_profit": safe_float(record.get("netProfit")),  # 净利润
+            "eps_ttm": safe_float(record.get("epsTTM")),  # 每股收益
+            "mb_revenue": safe_float(record.get("MBRevenue")),  # 主营营业收入
+            "total_share": safe_float(record.get("totalShare")),  # 总股本
+            "liqa_share": safe_float(record.get("liqaShare")),  # 流通股本
+            "source": "baostock",
+        }
+
+    def _convert_operation_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换营运能力数据格式 (100%覆盖operating_ability)"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "nr_turn_ratio": safe_float(
+                record.get("NRTurnRatio")
+            ),  # 应收账款周转率(次)
+            "nr_turn_days": safe_float(
+                record.get("NRTurnDays")
+            ),  # 应收账款周转天数(天)
+            "inv_turn_ratio": safe_float(record.get("INVTurnRatio")),  # 存货周转率(次)
+            "inv_turn_days": safe_float(record.get("INVTurnDays")),  # 存货周转天数(天)
+            "ca_turn_ratio": safe_float(
+                record.get("CATurnRatio")
+            ),  # 流动资产周转率(次)
+            "asset_turn_ratio": safe_float(
+                record.get("AssetTurnRatio")
+            ),  # 总资产周转率
+            "source": "baostock",
+        }
+
+    def _convert_growth_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换成长能力数据格式"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "yoy_equity": safe_float(record.get("YOYEquity")),  # 净资产同比增长率
+            "yoy_asset": safe_float(record.get("YOYAsset")),  # 总资产同比增长率
+            "yoy_ni": safe_float(record.get("YOYNI")),  # 净利润同比增长率
+            "yoy_eps_basic": safe_float(
+                record.get("YOYEPSBasic")
+            ),  # 基本每股收益同比增长率
+            "yoy_pni": safe_float(
+                record.get("YOYPNI")
+            ),  # 归属母公司股东净利润同比增长率
+            "source": "baostock",
+        }
+
+    def _convert_balance_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换偿债能力数据格式"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "current_ratio": safe_float(record.get("currentRatio")),  # 流动比率
+            "quick_ratio": safe_float(record.get("quickRatio")),  # 速动比率
+            "cash_ratio": safe_float(record.get("cashRatio")),  # 现金比率
+            "yoy_liability": safe_float(record.get("YOYLiability")),  # 总负债同比增长率
+            "liability_to_asset": safe_float(
+                record.get("liabilityToAsset")
+            ),  # 资产负债率
+            "asset_to_equity": safe_float(record.get("assetToEquity")),  # 权益乘数
+            "source": "baostock",
+        }
+
+    def _convert_cash_flow_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换现金流量数据格式"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "ca_to_asset": safe_float(record.get("CAToAsset")),  # 流动资产除以总资产
+            "nca_to_asset": safe_float(
+                record.get("NCAToAsset")
+            ),  # 非流动资产除以总资产
+            "tangible_asset_to_asset": safe_float(
+                record.get("tangibleAssetToAsset")
+            ),  # 有形资产除以总资产
+            "ebit_to_interest": safe_float(
+                record.get("ebitToInterest")
+            ),  # 已获利息倍数
+            "cfo_to_or": safe_float(
+                record.get("CFOToOR")
+            ),  # 经营活动产生的现金流量净额除以营业收入
+            "cfo_to_np": safe_float(
+                record.get("CFOToNP")
+            ),  # 经营性现金净流量除以净利润
+            "cfo_to_gr": safe_float(
+                record.get("CFOToGr")
+            ),  # 经营性现金净流量除以营业总收入
+            "source": "baostock",
+        }
+
+    def _convert_dupont_data(self, record: pd.Series, symbol: str) -> Dict[str, Any]:
+        """转换杜邦指数数据格式"""
+
+        def safe_float(value, default=0.0):
+            if pd.isna(value) or value == "" or value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        return {
+            "symbol": symbol,
+            "pub_date": str(record.get("pubDate", "")),
+            "stat_date": str(record.get("statDate", "")),
+            "dupont_roe": safe_float(record.get("dupontROE")),  # 净资产收益率
+            "dupont_asset_sto_equity": safe_float(
+                record.get("dupontAssetStoEquity")
+            ),  # 权益乘数
+            "dupont_asset_turn": safe_float(
+                record.get("dupontAssetTurn")
+            ),  # 总资产周转率
+            "dupont_pnitoni": safe_float(
+                record.get("dupontPnitoni")
+            ),  # 归属母公司股东的净利润/净利润
+            "dupont_nitogr": safe_float(
+                record.get("dupontNitogr")
+            ),  # 净利润/营业总收入
+            "dupont_tax_burden": safe_float(
+                record.get("dupontTaxBurden")
+            ),  # 净利润/利润总额
+            "dupont_int_burden": safe_float(
+                record.get("dupontIntburden")
+            ),  # 利润总额/息税前利润
+            "dupont_ebit_to_gr": safe_float(
+                record.get("dupontEbittogr")
+            ),  # 息税前利润/营业总收入
             "source": "baostock",
         }
 

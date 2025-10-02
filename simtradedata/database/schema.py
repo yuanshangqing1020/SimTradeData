@@ -22,7 +22,7 @@ DATABASE_SCHEMA = {
             -- 分类信息
             industry_l1 TEXT,                     -- 一级行业 (从BaoStock获取)
             industry_l2 TEXT,                     -- 二级行业/行业分类 (从BaoStock industryClassification获取)
-            concepts TEXT,                        -- 概念标签 (JSON数组，从QStock/AKShare获取)
+            concepts TEXT,                        -- 概念标签 (JSON数组，从QStock获取)
 
             -- 基础属性
             list_date DATE,                       -- 上市日期
@@ -206,28 +206,79 @@ DATABASE_SCHEMA = {
             symbol TEXT NOT NULL,
             ex_date DATE NOT NULL,               -- 除权除息日
             record_date DATE,                    -- 股权登记日
-            
+
             -- 分红
             cash_dividend REAL DEFAULT 0,        -- 现金分红(每股)
             stock_dividend REAL DEFAULT 0,       -- 股票分红(每股)
-            
+
             -- 配股
             rights_ratio REAL DEFAULT 0,         -- 配股比例
             rights_price REAL DEFAULT 0,         -- 配股价格
-            
+
             -- 拆股合股
             split_ratio REAL DEFAULT 1,          -- 拆股比例
-            
+
             -- 复权因子
             adj_factor REAL DEFAULT 1,           -- 复权因子
-            
+
             source TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            
+
             PRIMARY KEY (symbol, ex_date)
         )
     """,
-    # 8. 数据源配置表
+    # 8a. 资产负债表详细科目 (QStock数据，110+字段)
+    "balance_sheet_detail": """
+        CREATE TABLE balance_sheet_detail (
+            symbol TEXT NOT NULL,
+            report_date DATE NOT NULL,
+            report_type TEXT NOT NULL,            -- Q1/Q2/Q3/Q4/annual
+
+            -- 使用JSON存储所有详细科目，QStock提供110+字段
+            -- 包括：货币资金、交易性金融资产、应收账款、存货、固定资产等
+            data TEXT NOT NULL,                   -- JSON格式存储所有字段
+
+            source TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (symbol, report_date, report_type)
+        )
+    """,
+    # 8b. 利润表详细科目 (QStock数据，55+字段)
+    "income_statement_detail": """
+        CREATE TABLE income_statement_detail (
+            symbol TEXT NOT NULL,
+            report_date DATE NOT NULL,
+            report_type TEXT NOT NULL,            -- Q1/Q2/Q3/Q4/annual
+
+            -- 使用JSON存储所有详细科目，QStock提供55+字段
+            -- 包括：营业收入、营业成本、销售费用、管理费用、财务费用等
+            data TEXT NOT NULL,                   -- JSON格式存储所有字段
+
+            source TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (symbol, report_date, report_type)
+        )
+    """,
+    # 8c. 现金流量表详细科目 (QStock数据，75+字段)
+    "cash_flow_detail": """
+        CREATE TABLE cash_flow_detail (
+            symbol TEXT NOT NULL,
+            report_date DATE NOT NULL,
+            report_type TEXT NOT NULL,            -- Q1/Q2/Q3/Q4/annual
+
+            -- 使用JSON存储所有详细科目，QStock提供75+字段
+            -- 包括：经营活动、投资活动、筹资活动现金流的详细项目
+            data TEXT NOT NULL,                   -- JSON格式存储所有字段
+
+            source TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (symbol, report_date, report_type)
+        )
+    """,
+    # 9. 数据源配置表
     "data_sources": """
         CREATE TABLE data_sources (
             name TEXT PRIMARY KEY,               -- 数据源名称
@@ -376,6 +427,15 @@ DATABASE_INDEXES = {
     "idx_financials_report_date": "CREATE INDEX idx_financials_report_date ON financials(report_date DESC, report_type)",
     "idx_financials_created_at": "CREATE INDEX idx_financials_created_at ON financials(created_at DESC)",  # 新增：最近财务数据查询优化
     "idx_financials_symbol_report": "CREATE INDEX idx_financials_symbol_report ON financials(symbol, report_date, report_type)",  # 新增：复合查询优化
+    # 资产负债表详细科目索引
+    "idx_balance_sheet_symbol_date": "CREATE INDEX idx_balance_sheet_symbol_date ON balance_sheet_detail(symbol, report_date DESC)",
+    "idx_balance_sheet_report_date": "CREATE INDEX idx_balance_sheet_report_date ON balance_sheet_detail(report_date DESC, report_type)",
+    # 利润表详细科目索引
+    "idx_income_statement_symbol_date": "CREATE INDEX idx_income_statement_symbol_date ON income_statement_detail(symbol, report_date DESC)",
+    "idx_income_statement_report_date": "CREATE INDEX idx_income_statement_report_date ON income_statement_detail(report_date DESC, report_type)",
+    # 现金流量表详细科目索引
+    "idx_cash_flow_symbol_date": "CREATE INDEX idx_cash_flow_symbol_date ON cash_flow_detail(symbol, report_date DESC)",
+    "idx_cash_flow_report_date": "CREATE INDEX idx_cash_flow_report_date ON cash_flow_detail(report_date DESC, report_type)",
     # 数据质量索引
     "idx_data_quality_source": "CREATE INDEX idx_data_quality_source ON data_source_quality(source_name, data_type, date DESC)",
     "idx_data_quality_symbol": "CREATE INDEX idx_data_quality_symbol ON data_source_quality(symbol, source_name)",

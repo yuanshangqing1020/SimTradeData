@@ -67,7 +67,7 @@ mootdx
 ```python
 from mootdx.reader import Reader
 
-reader = Reader.factory(market='std', tdxdir='C:/new_tdx')
+reader = Reader.factory(market='std', tdxdir='/mnt/c/new_tdx')
 df = reader.daily(symbol='600036')  # 返回日线OHLCV
 ```
 
@@ -279,7 +279,7 @@ class MootdxAdapter(BaseDataSource):
 
     def __init__(self, config):
         super().__init__("mootdx", config)
-        self.tdx_dir = config.get("tdx_dir", "C:/new_tdx")
+        self.tdx_dir = config.get("tdx_dir", "/mnt/c/new_tdx")
         self.reader = None
         self.quotes = None
 
@@ -418,7 +418,7 @@ data_sources:
   mootdx:
     enabled: true
     priority: 1  # 最高优先级
-    tdx_dir: "C:/new_tdx"  # 通达信安装目录
+    tdx_dir: "/mnt/c/new_tdx"  # 通达信安装目录
     timeout: 10
     retry_times: 3
 

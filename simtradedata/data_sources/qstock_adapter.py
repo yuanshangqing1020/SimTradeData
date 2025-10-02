@@ -258,6 +258,117 @@ class QStockAdapter(BaseDataSource):
 
         return self._retry_request(_fetch_data)
 
+    def get_balance_sheet(
+        self, symbol: str, report_date: Union[str, date] = None
+    ) -> Dict[str, Any]:
+        """
+        获取资产负债表（110+科目）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+
+        Returns:
+            Dict[str, Any]: 资产负债表数据
+        """
+        if not self.is_connected():
+            self.connect()
+
+        def _fetch_data():
+            try:
+                # QStock使用financial_statement接口
+                # 参数: flag='资产负债表'或'zcfz', date=报表日期
+                date_param = None
+                if report_date:
+                    # 转换日期格式为YYYYMMDD
+                    date_str = self._normalize_date(report_date).replace("-", "")
+                    date_param = date_str
+
+                df = self._qstock.financial_statement("资产负债表", date=date_param)
+
+                if df is None or (hasattr(df, "empty") and df.empty):
+                    raise DataSourceDataError(f"未获取到资产负债表数据: {symbol}")
+
+                return df
+
+            except Exception as e:
+                logger.error(f"QStock获取资产负债表失败 {symbol}: {e}")
+                raise DataSourceDataError(f"获取资产负债表失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def get_income_statement(
+        self, symbol: str, report_date: Union[str, date] = None
+    ) -> Dict[str, Any]:
+        """
+        获取利润表（55+科目）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+
+        Returns:
+            Dict[str, Any]: 利润表数据
+        """
+        if not self.is_connected():
+            self.connect()
+
+        def _fetch_data():
+            try:
+                date_param = None
+                if report_date:
+                    date_str = self._normalize_date(report_date).replace("-", "")
+                    date_param = date_str
+
+                df = self._qstock.financial_statement("利润表", date=date_param)
+
+                if df is None or (hasattr(df, "empty") and df.empty):
+                    raise DataSourceDataError(f"未获取到利润表数据: {symbol}")
+
+                return df
+
+            except Exception as e:
+                logger.error(f"QStock获取利润表失败 {symbol}: {e}")
+                raise DataSourceDataError(f"获取利润表失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
+    def get_cash_flow(
+        self, symbol: str, report_date: Union[str, date] = None
+    ) -> Dict[str, Any]:
+        """
+        获取现金流量表（75+科目）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+
+        Returns:
+            Dict[str, Any]: 现金流量表数据
+        """
+        if not self.is_connected():
+            self.connect()
+
+        def _fetch_data():
+            try:
+                date_param = None
+                if report_date:
+                    date_str = self._normalize_date(report_date).replace("-", "")
+                    date_param = date_str
+
+                df = self._qstock.financial_statement("现金流量表", date=date_param)
+
+                if df is None or (hasattr(df, "empty") and df.empty):
+                    raise DataSourceDataError(f"未获取到现金流量表数据: {symbol}")
+
+                return df
+
+            except Exception as e:
+                logger.error(f"QStock获取现金流量表失败 {symbol}: {e}")
+                raise DataSourceDataError(f"获取现金流量表失败: {e}")
+
+        return self._retry_request(_fetch_data)
+
     def _convert_to_qstock_symbol(self, symbol: str) -> str:
         """转换为QStock股票代码格式"""
         # QStock通常使用6位数字代码

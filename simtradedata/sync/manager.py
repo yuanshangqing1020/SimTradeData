@@ -437,7 +437,7 @@ class SyncManager(BaseManager):
 
                     # 更新股票列表
                     update_phase_description("更新股票列表（可能需要较长时间）")
-                    stock_list_result = self._update_stock_list()
+                    stock_list_result = self._update_stock_list(target_date)
                     full_result["phases"]["stock_list_update"] = stock_list_result
                     full_result["summary"]["total_phases"] += 1
                     # 更新进度条
@@ -1051,8 +1051,16 @@ class SyncManager(BaseManager):
             "total_records": final_range["count"] if final_range else 0,
         }
 
-    def _update_stock_list(self) -> Dict[str, Any]:
-        """增量更新股票列表（优化版本）"""
+    def _update_stock_list(self, target_date: Optional[date] = None) -> Dict[str, Any]:
+        """
+        增量更新股票列表（优化版本）
+
+        Args:
+            target_date: 目标日期，用于获取该日期的股票列表
+        """
+        if target_date is None:
+            target_date = datetime.now().date()
+
         self.logger.info("🔄 开始股票列表增量更新（优化版本）...")
 
         try:
@@ -1109,140 +1117,50 @@ class SyncManager(BaseManager):
                         "failed_stocks": 0,
                     }
 
-            # 获取股票信息
-            self.logger.info("🔄 开始从数据源获取股票信息...")
-            stock_info = self.data_source_manager.get_stock_info()
-            self.logger.info(f"✅ 获取股票信息完成，数据类型: {type(stock_info)}")
+            # 获取股票信息 - 使用目标日期的股票列表（避免幸存者偏差）
+            # 直接使用 BaoStock 以支持历史日期查询
+            self.logger.info(f"🔄 开始获取股票信息（目标日期: {target_date}）...")
+            baostock_source = self.data_source_manager.get_source("baostock")
+            if not baostock_source:
+                raise ValidationError("BaoStock数据源不可用")
 
-            if hasattr(stock_info, "__len__"):
-                self.logger.info(f"📊 股票信息数据长度: {len(stock_info)}")
+            if not baostock_source.is_connected():
+                baostock_source.connect()
 
-            # 诊断数据结构
-            if isinstance(stock_info, dict):
-                self.logger.info(f"字典键: {list(stock_info.keys())}")
-                if "data" in stock_info:
-                    self.logger.info(f"data字段类型: {type(stock_info['data'])}")
-                if "success" in stock_info:
-                    self.logger.info(f"success字段值: {stock_info['success']}")
+            # BaoStock 支持指定日期查询，确保获取目标日期的股票列表
+            # 修改 get_stock_info 以支持日期参数
+            stock_info = baostock_source.get_stock_info(target_date=str(target_date))
 
-            # 修复解包嵌套数据的逻辑
-            if isinstance(stock_info, dict):
-                self.logger.info(f"检测到字典格式，键: {list(stock_info.keys())}")
-
-                if "success" in stock_info and "data" in stock_info:
-                    if stock_info["success"]:
-                        stock_info = stock_info["data"]
-                        self.logger.info(
-                            f"成功解包数据源格式，数据类型: {type(stock_info)}"
-                        )
-                    else:
-                        error_msg = stock_info.get("error", "未知错误")
-                        self.logger.error(f"数据源返回失败: {error_msg}")
-                        return {
-                            "status": "failed",
-                            "error": f"数据源返回失败: {error_msg}",
-                            "total_stocks": 0,
-                            "new_stocks": 0,
-                            "updated_stocks": 0,
-                        }
-                # 统一数据格式处理 - 避免多次拆包
-                stock_info = self._extract_data_safely(stock_info)
-
-                if not stock_info:
-                    self.logger.error("解包后数据为空")
-                    return {
-                        "status": "failed",
-                        "error": "股票数据格式错误: 解包后数据为空",
-                        "total_stocks": 0,
-                        "new_stocks": 0,
-                        "updated_stocks": 0,
-                    }
-
-            # 最终验证数据格式
-            if stock_info is None:
-                self.logger.warning("解包后数据为空")
+            # BaoStock直接返回列表，验证数据格式
+            if not isinstance(stock_info, list):
+                self.logger.error(f"BaoStock返回格式错误: {type(stock_info)}")
                 return {
                     "status": "failed",
-                    "error": "获取股票列表失败：解包后数据为空",
+                    "error": f"BaoStock返回格式错误: {type(stock_info)}",
                     "total_stocks": 0,
                     "new_stocks": 0,
                     "updated_stocks": 0,
                 }
 
-            # 记录最终的数据类型和长度
-            if hasattr(stock_info, "__len__"):
-                self.logger.info(
-                    f"最终数据格式: {type(stock_info)}, 长度: {len(stock_info)}"
-                )
-            else:
-                self.logger.warning(f"最终数据不是可迭代对象: {type(stock_info)}")
-
-            # 转换DataFrame为列表格式
-            if hasattr(stock_info, "iterrows"):
-                stock_list = []
-                for _, row in stock_info.iterrows():
-                    try:
-                        # 安全地提取数据，处理可能的空值或异常值
-                        code = str(row.get("代码", "")).strip()
-                        name = str(row.get("名称", "")).strip()
-
-                        # 跳过无效数据
-                        if not code or not name or code == "nan" or name == "nan":
-                            continue
-
-                        stock_data = {
-                            "symbol": code,
-                            "name": name,
-                            "market": self._determine_market(code),
-                        }
-                        stock_list.append(stock_data)
-                    except Exception as e:
-                        self.logger.debug(f"跳过无效行数据: {e}")
-                        continue
-
-                stock_info = stock_list
-                self.logger.info(f"DataFrame转换完成，共 {len(stock_list)} 只有效股票")
-            elif isinstance(stock_info, list):
-                # 如果已经是列表，检查格式
-                self.logger.info(f"数据已是列表格式，共 {len(stock_info)} 项")
-            else:
-                self.logger.warning(f"未知的stock_info数据格式: {type(stock_info)}")
-
-            if not stock_info or not hasattr(stock_info, "__len__"):
-                self.logger.warning("股票列表数据格式不正确")
+            if not stock_info:
+                self.logger.warning("BaoStock返回空列表")
                 return {
                     "status": "failed",
-                    "error": "股票列表数据格式不正确",
+                    "error": "获取股票列表失败：BaoStock返回空列表",
                     "total_stocks": 0,
                     "new_stocks": 0,
                     "updated_stocks": 0,
                 }
+
+            self.logger.info(f"✅ 从BaoStock获取 {len(stock_info)} 只股票")
 
             # 批量处理股票数据 - 性能优化
             new_stocks = 0
             updated_stocks = 0
             failed_stocks = 0
 
-            # 预处理所有股票数据 - 修复版本
+            # 预处理所有股票数据
             processed_stocks = []
-
-            # 确保stock_info是列表格式
-            if not isinstance(stock_info, (list, tuple)) and not hasattr(
-                stock_info, "__iter__"
-            ):
-                self.logger.error(f"stock_info不是可迭代对象: {type(stock_info)}")
-                return {
-                    "status": "failed",
-                    "error": f"股票数据不是可迭代格式: {type(stock_info)}",
-                    "total_stocks": 0,
-                    "new_stocks": 0,
-                    "updated_stocks": 0,
-                    "failed_stocks": 0,
-                }
-
-            self.logger.info(
-                f"开始预处理股票数据，数据类型: {type(stock_info)}, 长度: {len(stock_info) if hasattr(stock_info, '__len__') else '未知'}"
-            )
 
             for i, stock_data in enumerate(stock_info):
                 try:
@@ -1645,7 +1563,13 @@ class SyncManager(BaseManager):
     def _sync_extended_data(
         self, symbols: List[str], target_date: date, progress_bar=None
     ) -> Dict[str, Any]:
-        """增量同步扩展数据（财务数据、估值数据等）"""
+        """
+        增量同步扩展数据（财务数据、估值数据等）
+
+        优化策略：
+        - 财务数据：使用批量导入（一次性获取所有股票，避免逐个查询的巨大开销）
+        - 估值数据：逐个获取（数据源不支持批量API）
+        """
         session_id = str(uuid.uuid4())
         self.logger.info(f"🔄 开始扩展数据同步: {len(symbols)}只股票")
 
@@ -1656,6 +1580,7 @@ class SyncManager(BaseManager):
             "processed_symbols": 0,
             "failed_symbols": 0,
             "session_id": session_id,
+            "batch_mode": False,
         }
 
         if not symbols:
@@ -1666,14 +1591,122 @@ class SyncManager(BaseManager):
 
         self.logger.info(f"📊 开始处理: {len(symbols)}只股票")
 
-        # 批量处理每只股票（添加事务保护）
+        # 🚀 优化1: 批量导入财务数据（当股票数量>50时启用批量模式）
+        batch_threshold = 50
+        financial_data_map = {}  # symbol -> financial_data
+
+        if len(symbols) >= batch_threshold:
+            self.logger.info(
+                f"⚡ 检测到批量场景({len(symbols)}只股票)，启用批量财务数据导入"
+            )
+            result["batch_mode"] = True
+
+            try:
+                # 计算报告期（使用去年年报）
+                report_year = target_date.year - 1
+                report_date_str = f"{report_year}-12-31"
+
+                # 批量导入所有股票的财务数据
+                self.logger.info(f"开始批量导入财务数据: {report_date_str}")
+                batch_result = self.data_source_manager.batch_import_financial_data(
+                    report_date_str, "Q4"
+                )
+
+                # 检查batch_result是否为字典类型
+                self.logger.debug(f"批量导入返回类型: {type(batch_result)}")
+
+                if not isinstance(batch_result, dict):
+                    self.logger.warning(f"批量导入返回非字典类型: {type(batch_result)}")
+                    result["batch_mode"] = False
+                elif batch_result.get("success") and batch_result.get("data"):
+                    # 解包嵌套的数据结构（@unified_error_handler 导致的双重包装）
+                    inner_data = batch_result.get("data")
+
+                    if isinstance(inner_data, dict) and "data" in inner_data:
+                        # 双重嵌套: {'data': {'data': [...]}}
+                        actual_records = inner_data["data"]
+                        self.logger.debug(
+                            f"解包双重嵌套数据结构，获取到 {len(actual_records) if isinstance(actual_records, list) else 0} 条记录"
+                        )
+                    else:
+                        # 单层嵌套: {'data': [...]}
+                        actual_records = inner_data
+                        self.logger.debug(
+                            f"使用单层数据结构，获取到 {len(actual_records) if isinstance(actual_records, list) else 0} 条记录"
+                        )
+
+                    # 验证实际记录是否为列表
+                    if not isinstance(actual_records, list):
+                        self.logger.warning(
+                            f"批量导入数据格式错误: actual_records不是列表，类型为{type(actual_records)}"
+                        )
+                        result["batch_mode"] = False
+                    else:
+                        # 导入字段映射函数
+                        try:
+                            from simtradedata.data_sources.mootdx_finvalue_fields import (
+                                map_financial_data,
+                            )
+
+                            has_mapper = True
+                        except ImportError:
+                            self.logger.warning(
+                                "未找到mootdx字段映射模块，使用原始数据"
+                            )
+                            has_mapper = False
+
+                        # 构建symbol -> data映射
+                        self.logger.debug(
+                            f"开始构建财务数据映射，symbols数量: {len(symbols)}, records数量: {len(actual_records)}"
+                        )
+
+                        for record in actual_records:
+                            symbol = record.get("symbol")
+                            if symbol in symbols:  # 只处理需要同步的股票
+                                raw_data = record.get("data", {})
+
+                                # 应用字段映射（将通达信列名映射为标准字段名）
+                                if has_mapper and raw_data:
+                                    try:
+                                        mapped_data = map_financial_data(raw_data)
+                                    except Exception as e:
+                                        self.logger.warning(
+                                            f"字段映射失败 {symbol}: {e}，使用原始数据"
+                                        )
+                                        mapped_data = raw_data
+                                else:
+                                    mapped_data = raw_data
+
+                                financial_data_map[symbol] = {
+                                    "data": mapped_data,
+                                    "report_date": record.get("report_date"),
+                                    "report_type": record.get("report_type"),
+                                }
+
+                        self.logger.info(
+                            f"✅ 批量导入完成: 获取到 {len(financial_data_map)} 只股票的财务数据"
+                        )
+                else:
+                    self.logger.warning(f"批量导入失败，将回退到逐个查询模式")
+                    result["batch_mode"] = False
+
+            except Exception as e:
+                self.logger.error(f"批量导入财务数据失败: {e}")
+                self.logger.warning("将回退到逐个查询模式")
+                result["batch_mode"] = False
+
+        # 处理每只股票的扩展数据
+        self.logger.debug(f"开始逐只处理股票，批量模式: {result.get('batch_mode')}")
         for i, symbol in enumerate(symbols):
             self.logger.debug(f"处理 {symbol} ({i+1}/{len(symbols)})")
 
             try:
+                # 如果批量模式成功，传入预加载的财务数据
+                preloaded_financial = financial_data_map.get(symbol)
+
                 # 使用事务保护同步单个股票
                 symbol_result = self._sync_single_symbol_with_transaction(
-                    symbol, target_date, session_id
+                    symbol, target_date, session_id, preloaded_financial
                 )
 
                 # 更新结果统计
@@ -1764,9 +1797,21 @@ class SyncManager(BaseManager):
             self.logger.debug(f"股票信息检查异常: {symbol} - {e}")
 
     def _sync_single_symbol_with_transaction(
-        self, symbol: str, target_date: date, session_id: str
+        self,
+        symbol: str,
+        target_date: date,
+        session_id: str,
+        preloaded_financial: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """使用事务保护同步单个股票的扩展数据"""
+        """
+        使用事务保护同步单个股票的扩展数据
+
+        Args:
+            symbol: 股票代码
+            target_date: 目标日期
+            session_id: 会话ID
+            preloaded_financial: 预加载的财务数据（批量模式下传入）
+        """
         result = {
             "success": False,
             "financials_count": 0,
@@ -1806,141 +1851,97 @@ class SyncManager(BaseManager):
 
             # 验证报告期有效性
             if DataQualityValidator.is_valid_report_date(report_date_str, symbol):
-                # 优先尝试BaoStock获取财务数据
                 try:
-                    baostock_source = self.data_source_manager.sources.get("baostock")
-                    if baostock_source and baostock_source.is_connected():
-                        financial_data = baostock_source.get_fundamentals(
-                            symbol, report_date_str, "Q4"
-                        )
-
-                        if financial_data and self._is_valid_financial_data_relaxed(
-                            financial_data
-                        ):
-                            self._insert_financial_data(
-                                financial_data, symbol, report_date_str, "baostock"
-                            )
-                            result["financials_count"] += 1
-                            financial_success = True
-                            self.logger.debug(f"BaoStock财务数据插入成功: {symbol}")
-                        else:
-                            self.logger.debug(f"BaoStock财务数据无效: {symbol}")
+                    # 🚀 优化: 优先使用预加载的财务数据（批量模式）
+                    if preloaded_financial and preloaded_financial.get("data"):
+                        self.logger.debug(f"使用预加载的财务数据: {symbol}")
+                        financial_data = preloaded_financial["data"]
+                        data_source = "mootdx_batch"  # 标记为批量导入
                     else:
-                        self.logger.debug(f"BaoStock未连接，跳过: {symbol}")
-
-                except Exception as e:
-                    self.logger.debug(f"BaoStock获取财务数据失败: {symbol} - {e}")
-
-                # 如果BaoStock失败，尝试mootdx作为后备
-                if not financial_success:
-                    try:
-                        financial_data = self.data_source_manager.get_fundamentals(
+                        # 回退: 逐个查询（单股模式或批量失败时）
+                        self.logger.debug(f"逐个查询财务数据: {symbol}")
+                        financial_result = self.data_source_manager.get_fundamentals(
                             symbol, report_date_str, "Q4"
                         )
 
                         # 标准数据源响应格式解包
-                        financial_data = self._extract_data_safely(financial_data)
+                        financial_data = self._extract_data_safely(financial_result)
 
-                        # 使用放宽的验证标准
-                        if financial_data and self._is_valid_financial_data_relaxed(
-                            financial_data
-                        ):
-                            self._insert_financial_data(
-                                financial_data, symbol, report_date_str, "mootdx"
-                            )
-                            result["financials_count"] += 1
-                            financial_success = True
-                            self.logger.debug(f"mootdx财务数据插入成功: {symbol}")
-                        else:
-                            self.logger.debug(f"mootdx财务数据无效: {symbol}")
+                        # 获取数据来源
+                        data_source = (
+                            financial_result.get("source", "unknown")
+                            if isinstance(financial_result, dict)
+                            else "unknown"
+                        )
 
-                    except Exception as e:
-                        self.logger.warning(f"mootdx获取财务数据失败: {symbol} - {e}")
+                    # 使用放宽的验证标准
+                    if financial_data and self._is_valid_financial_data_relaxed(
+                        financial_data
+                    ):
+                        self._insert_financial_data(
+                            financial_data, symbol, report_date_str, data_source
+                        )
+                        result["financials_count"] += 1
+                        financial_success = True
+                        self.logger.debug(f"{data_source}财务数据插入成功: {symbol}")
+                    else:
+                        self.logger.debug(f"财务数据无效: {symbol}")
+
+                except Exception as e:
+                    self.logger.warning(f"获取财务数据失败: {symbol} - {e}")
             else:
                 self.logger.warning(f"跳过无效报告期: {symbol} {report_date_str}")
 
             # 处理估值数据
             try:
-                # 优先尝试BaoStock获取估值数据
-                baostock_source = self.data_source_manager.sources.get("baostock")
-                if baostock_source and baostock_source.is_connected():
-                    try:
-                        valuation_data = baostock_source.get_valuation_data(
-                            symbol, str(target_date)
-                        )
+                # 使用DataSourceManager统一获取估值数据（根据优先级配置）
+                valuation_result = self.data_source_manager.get_valuation_data(
+                    symbol, str(target_date)
+                )
 
-                        # BaoStock返回单个字典，转换为列表以统一处理
-                        if valuation_data and isinstance(valuation_data, dict):
-                            valuation_records = [valuation_data]
-                        elif valuation_data and isinstance(valuation_data, list):
-                            valuation_records = valuation_data
-                        else:
-                            valuation_records = []
+                # 标准数据源响应格式解包
+                valuation_data = self._extract_data_safely(valuation_result)
 
-                        if valuation_records:
-                            for record in valuation_records:
-                                # 确保 record 是字典类型
-                                if not isinstance(record, dict):
-                                    continue
+                # 获取数据来源
+                data_source = (
+                    valuation_result.get("source", "unknown")
+                    if isinstance(valuation_result, dict)
+                    else "unknown"
+                )
 
-                                # 检查是否已存在该记录
-                                record_date = record.get("date", "")
-                                existing = self.db_manager.fetchone(
-                                    "SELECT COUNT(*) as count FROM valuations WHERE symbol = ? AND date = ?",
-                                    (symbol, record_date),
-                                )
-
-                                if existing and existing["count"] == 0:
-                                    self.db_manager.execute(
-                                        """INSERT INTO valuations
-                                        (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, source)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                                        (
-                                            symbol,
-                                            record_date,
-                                            record.get("pe_ratio"),
-                                            record.get("pb_ratio"),
-                                            record.get("ps_ratio"),
-                                            record.get("pcf_ratio"),
-                                            record.get("source", ""),
-                                        ),
-                                    )
-                                    result["valuations_count"] += 1
-
-                            if valuation_records:
-                                valuation_success = True
-                                self.logger.debug(f"BaoStock估值数据插入成功: {symbol}")
-                    except Exception as e:
-                        self.logger.debug(f"BaoStock获取估值数据失败: {symbol} - {e}")
-
-                # 如果BaoStock失败，尝试原有方式作为后备
-                if not valuation_success:
-                    valuation_data = self.data_source_manager.get_valuation_data(
-                        symbol, str(target_date)
+                # 验证估值数据有效性
+                if valuation_data and DataQualityValidator.is_valid_valuation_data(
+                    valuation_data
+                ):
+                    # 检查是否已存在该记录
+                    record_date = valuation_data.get("date", str(target_date))
+                    existing = self.db_manager.fetchone(
+                        "SELECT COUNT(*) as count FROM valuations WHERE symbol = ? AND date = ?",
+                        (symbol, record_date),
                     )
 
-                    # 标准数据源响应格式解包
-                    valuation_data = self._extract_data_safely(valuation_data)
-
-                    # 验证估值数据有效性
-                    if valuation_data and DataQualityValidator.is_valid_valuation_data(
-                        valuation_data
-                    ):
+                    if existing and existing["count"] == 0:
                         self.db_manager.execute(
-                            "INSERT OR REPLACE INTO valuations (symbol, date, pe_ratio, pb_ratio, source, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                            """INSERT INTO valuations
+                            (symbol, date, pe_ratio, pb_ratio, ps_ratio, pcf_ratio, source, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                             (
                                 symbol,
-                                str(target_date),
-                                valuation_data.get("pe_ratio", None),
-                                valuation_data.get("pb_ratio", None),
-                                "mootdx",
+                                record_date,
+                                valuation_data.get("pe_ratio"),
+                                valuation_data.get("pb_ratio"),
+                                valuation_data.get("ps_ratio"),
+                                valuation_data.get("pcf_ratio"),
+                                data_source,
                             ),
                         )
                         result["valuations_count"] += 1
                         valuation_success = True
-                        self.logger.debug(f"mootdx估值数据插入成功: {symbol}")
+                        self.logger.debug(f"{data_source}估值数据插入成功: {symbol}")
                     else:
-                        self.logger.debug(f"估值数据无效，跳过: {symbol}")
+                        self.logger.debug(f"估值数据已存在，跳过: {symbol}")
+                else:
+                    self.logger.debug(f"估值数据无效: {symbol}")
 
             except Exception as e:
                 self.logger.warning(f"获取估值数据失败: {symbol} - {e}")

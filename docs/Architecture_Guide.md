@@ -63,6 +63,72 @@ SimTradeData 采用零技术债务的全新架构设计：
 └──────────────────────────────────────────────────────────────┘
 ```
 
+## 🎯 数据源优先级策略
+
+SimTradeData 集成了三个互补的数据源，形成完整的金融数据生态系统。
+
+### 数据源概览
+
+| 数据源 | 类型 | 核心优势 | 主要用途 | 评级 |
+|--------|------|----------|----------|------|
+| **Mootdx** | 本地通达信 | 性能极佳，49个核心财务字段 | OHLCV、核心指标、深度行情 | ⭐⭐⭐ |
+| **QStock** | 在线API | 240+完整字段，API简单 | 三大报表详细科目 | ⭐⭐⭐ |
+| **BaoStock** | 官方API | 权威稳定，季度聚合 | 季度指标、除权除息 | ⭐⭐ |
+
+### 财务数据优先级策略
+
+**1. 核心基础指标（性能优先）**
+
+优先级顺序：
+1. **Mootdx** (首选) - 本地通达信，49个核心字段，极速查询
+2. **BaoStock** (备用) - 官方API，季度指标，稳定可靠
+3. **QStock** (备用) - 在线API，完整数据
+
+Mootdx已映射的49个核心字段包括：每股指标、资产负债表、利润表、现金流量表关键科目。
+
+**2. 三大报表详细科目（完整性优先）**
+
+优先级顺序：
+1. **QStock** (首选) - 240+字段，API简单，一行代码获取
+2. **Mootdx** (潜力) - 理论322字段，需扩展映射
+
+QStock三大报表覆盖：
+- 资产负债表：110+科目 (98%覆盖)
+- 利润表：55+科目 (98%覆盖)
+- 现金流量表：75+科目 (98%覆盖)
+
+**3. 季度聚合指标（权威性优先）**
+
+优先级顺序：
+1. **BaoStock** (首选) - 6个专业季度查询API，官方权威
+2. **Mootdx** (补充) - 核心指标补充
+
+BaoStock的6个季度查询API：
+- `query_profit_data()` - 盈利能力
+- `query_operation_data()` - 营运能力
+- `query_growth_data()` - 成长能力
+- `query_balance_data()` - 偿债能力
+- `query_cash_flow_data()` - 现金流量数据
+- `query_dupont_data()` - 杜邦指数数据
+
+### 性能对比
+
+| 数据源 | 响应时间 | 并发能力 | 稳定性 | 使用场景 |
+|--------|----------|----------|--------|----------|
+| Mootdx | ~50ms | 极高 | 极高 | 核心指标快速查询 |
+| QStock | ~500ms | 中等 | 中等 | 完整报表详细科目 |
+| BaoStock | ~1000ms | 低 | 高 | 季度指标权威查询 |
+
+### 最佳实践
+
+**性能优先场景：** 高频查询核心指标 → 使用 Mootdx
+
+**完整性优先场景：** 需要所有科目 → 使用 QStock
+
+**权威性优先场景：** 专业分析 → 使用 BaoStock
+
+详细的数据源优先级策略请参考：[数据源优先级策略](reference/Data_Source_Priority_Strategy.md)
+
 ## 📊 数据库架构
 
 ### 核心表结构
@@ -130,10 +196,108 @@ CREATE INDEX idx_valuations_date ON valuations(date DESC);
 CREATE INDEX idx_valuations_created_at ON valuations(created_at DESC);
 ```
 
-#### 4. data_source_quality - 数据质量监控
+#### 4. financials - 财务数据核心表
+```sql
+CREATE TABLE financials (
+    symbol TEXT NOT NULL,
+    report_date DATE NOT NULL,
+    report_type TEXT NOT NULL,        -- Q1/Q2/Q3/Q4/annual
+
+    -- 损益表核心指标
+    revenue REAL,                     -- 营业收入
+    operating_profit REAL,            -- 营业利润
+    net_profit REAL,                  -- 净利润
+
+    -- 资产负债表核心指标
+    total_assets REAL,                -- 总资产
+    total_liabilities REAL,           -- 总负债
+    shareholders_equity REAL,         -- 股东权益
+
+    -- 现金流量表核心指标
+    operating_cash_flow REAL,         -- 经营现金流
+    investing_cash_flow REAL,         -- 投资现金流
+    financing_cash_flow REAL,         -- 筹资现金流
+
+    -- 每股指标
+    eps REAL,                         -- 每股收益
+    bps REAL,                         -- 每股净资产
+
+    -- 财务比率
+    roe REAL,                         -- 净资产收益率
+    roa REAL,                         -- 总资产收益率
+
+    source TEXT NOT NULL,
+    PRIMARY KEY (symbol, report_date, report_type)
+);
+```
+
+#### 5a. balance_sheet_detail - 资产负债表详细科目
+```sql
+CREATE TABLE balance_sheet_detail (
+    symbol TEXT NOT NULL,
+    report_date DATE NOT NULL,
+    report_type TEXT NOT NULL,        -- Q1/Q2/Q3/Q4/annual
+
+    -- 使用JSON存储所有详细科目，QStock提供110+字段
+    data TEXT NOT NULL,               -- JSON格式存储所有字段
+
+    source TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (symbol, report_date, report_type)
+);
+
+-- 索引
+CREATE INDEX idx_balance_sheet_symbol_date ON balance_sheet_detail(symbol, report_date DESC);
+CREATE INDEX idx_balance_sheet_report_date ON balance_sheet_detail(report_date DESC, report_type);
+```
+
+#### 5b. income_statement_detail - 利润表详细科目
+```sql
+CREATE TABLE income_statement_detail (
+    symbol TEXT NOT NULL,
+    report_date DATE NOT NULL,
+    report_type TEXT NOT NULL,        -- Q1/Q2/Q3/Q4/annual
+
+    -- 使用JSON存储所有详细科目，QStock提供55+字段
+    data TEXT NOT NULL,               -- JSON格式存储所有字段
+
+    source TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (symbol, report_date, report_type)
+);
+
+-- 索引
+CREATE INDEX idx_income_statement_symbol_date ON income_statement_detail(symbol, report_date DESC);
+CREATE INDEX idx_income_statement_report_date ON income_statement_detail(report_date DESC, report_type);
+```
+
+#### 5c. cash_flow_detail - 现金流量表详细科目
+```sql
+CREATE TABLE cash_flow_detail (
+    symbol TEXT NOT NULL,
+    report_date DATE NOT NULL,
+    report_type TEXT NOT NULL,        -- Q1/Q2/Q3/Q4/annual
+
+    -- 使用JSON存储所有详细科目，QStock提供75+字段
+    data TEXT NOT NULL,               -- JSON格式存储所有字段
+
+    source TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (symbol, report_date, report_type)
+);
+
+-- 索引
+CREATE INDEX idx_cash_flow_symbol_date ON cash_flow_detail(symbol, report_date DESC);
+CREATE INDEX idx_cash_flow_report_date ON cash_flow_detail(report_date DESC, report_type);
+```
+
+#### 6. data_source_quality - 数据质量监控
 ```sql
 CREATE TABLE data_source_quality (
-    source_name TEXT NOT NULL,        -- 数据源名称（修正：原名 source）
+    source_name TEXT NOT NULL,        -- 数据源名称
     symbol TEXT,
     data_type TEXT NOT NULL,
     date DATE NOT NULL,
@@ -150,6 +314,15 @@ CREATE TABLE data_source_quality (
 CREATE INDEX idx_data_quality_source ON data_source_quality(source_name, data_type, date DESC);
 CREATE INDEX idx_data_quality_symbol ON data_source_quality(symbol, source_name);
 ```
+
+### 财务数据存储说明
+
+**核心财务表 (financials)**: 存储49个核心财务指标，来源于Mootdx本地通达信数据，性能极佳。
+
+**三大报表详细科目表**: 使用JSON格式存储QStock提供的240+详细科目，实现98%的PTrade API覆盖率：
+- **balance_sheet_detail**: 资产负债表110+科目
+- **income_statement_detail**: 利润表55+科目
+- **cash_flow_detail**: 现金流量表75+科目
 
 ### 架构优势
 
@@ -291,7 +464,7 @@ from simtradedata.monitoring import DataQualityMonitor
 monitor = DataQualityMonitor(db_manager)
 
 # 评估数据源质量
-quality = monitor.evaluate_source_quality("akshare", "000001.SZ", "ohlcv")
+quality = monitor.evaluate_source_quality("baostock", "000001.SZ", "ohlcv")
 print(f"质量评分: {quality['overall_score']}")
 
 # 获取数据源排名

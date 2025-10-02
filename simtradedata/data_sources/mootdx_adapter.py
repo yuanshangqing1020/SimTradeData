@@ -37,7 +37,7 @@ class MootdxAdapter(BaseDataSource):
         self._financial_cache = {}  # 财务数据内存缓存
 
         # mootdx特定配置
-        self.tdx_dir = self.config.get("tdx_dir", "C:/new_tdx")
+        self.tdx_dir = self.config.get("tdx_dir", "/mnt/c/new_tdx")
         self.use_online = self.config.get("use_online", True)
         self.market = self.config.get("market", "std")
         self.financial_cache_dir = self.config.get(
@@ -58,7 +58,12 @@ class MootdxAdapter(BaseDataSource):
 
             # 初始化Quotes（在线数据获取）
             if self.use_online:
-                self._quotes = Quotes.factory(market=self.market)
+                self._quotes = Quotes.factory(
+                    market=self.market,
+                    multithread=True,
+                    heartbeat=True,
+                    timeout=self.config.get("timeout", 15),
+                )
 
             self._connected = True
             logger.info(
@@ -260,6 +265,13 @@ class MootdxAdapter(BaseDataSource):
 
                 else:
                     # 获取所有股票列表
+                    # 注意：mootdx 在线获取股票列表非常慢（>60秒）
+                    # 建议使用 BaoStock 或从数据库读取已缓存的股票列表
+                    logger.warning(
+                        "mootdx 在线获取股票列表很慢，建议使用 BaoStock 或从数据库读取"
+                    )
+
+                    # 如果确实需要使用 mootdx，则执行以下操作（但会很慢）
                     df_sz = self._quotes.stocks(market=0)  # 深圳
                     df_ss = self._quotes.stocks(market=1)  # 上海
 
@@ -327,6 +339,103 @@ class MootdxAdapter(BaseDataSource):
 
         return self._retry_request(_fetch_data)
 
+    def batch_import_financial_data(
+        self, report_date: Union[str, date], report_type: str = "Q4"
+    ) -> Dict[str, Any]:
+        """
+        批量导入指定报告期的所有股票财务数据
+
+        这个方法专为批量操作设计，一次性下载并解析包含所有股票的财务数据文件，
+        避免了单股查询时重复下载和解析的性能问题。
+
+        注意：为了提高性能，此方法返回简化的原始数据，不进行复杂的字段映射和转换。
+
+        Args:
+            report_date: 报告期（如 "2019-12-31"）
+            report_type: 报告类型（Q1/Q2/Q3/Q4）
+
+        Returns:
+            Dict[str, Any]: {
+                "success": True/False,
+                "data": [财务数据记录列表],
+                "count": 记录数量,
+                "report_date": 报告期,
+                "report_type": 报告类型,
+                "error": 错误信息（如果失败）
+            }
+        """
+        if not self.is_connected():
+            self.connect()
+
+        report_date = self._normalize_date(report_date)
+
+        def _fetch_data():
+            try:
+                # 生成文件名
+                filename = self._get_financial_filename(report_date, report_type)
+                logger.info(f"批量导入财务数据: {filename}")
+
+                # 下载并解析整个文件（包含所有股票）
+                df = self._get_financial_data_for_period(filename)
+
+                if df is None or df.empty:
+                    raise DataSourceDataError(f"无法获取财务数据文件: {filename}")
+
+                # 转换所有股票的财务数据（简化版本，不做复杂转换）
+                records = []
+                success_count = 0
+                error_count = 0
+
+                for tdx_symbol in df.index:
+                    try:
+                        # 转换为标准代码格式
+                        symbol = self._convert_from_tdx_symbol(tdx_symbol)
+
+                        # 获取该股票的财务数据
+                        stock_data = df.loc[tdx_symbol]
+
+                        # 转换为字典（简化版本）
+                        record = {
+                            "symbol": symbol,
+                            "report_date": report_date,
+                            "report_type": report_type,
+                            "data": stock_data.to_dict(),  # 原始数据，保留所有字段
+                        }
+
+                        records.append(record)
+                        success_count += 1
+
+                    except Exception as e:
+                        error_count += 1
+                        logger.debug(f"处理股票 {tdx_symbol} 失败: {e}")
+                        continue
+
+                logger.info(
+                    f"批量导入完成: 成功 {success_count} 条，失败 {error_count} 条"
+                )
+
+                return {
+                    "success": True,
+                    "data": records,
+                    "count": len(records),
+                    "report_date": report_date,
+                    "report_type": report_type,
+                    "success_count": success_count,
+                    "error_count": error_count,
+                }
+
+            except Exception as e:
+                logger.error(f"批量导入财务数据失败: {e}")
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": str(e),
+                    "report_date": report_date,
+                    "report_type": report_type,
+                }
+
+        return self._retry_request(_fetch_data)
+
     def _get_financial_filename(self, report_date: str, report_type: str = "Q4") -> str:
         """
         根据报告期和报告类型生成财务数据文件名
@@ -387,6 +496,13 @@ class MootdxAdapter(BaseDataSource):
                 logger.info(f"下载财务数据: {filename}")
                 Affair.fetch(downdir=self.financial_cache_dir, filename=filename)
                 df = Affair.parse(downdir=self.financial_cache_dir, filename=filename)
+
+            # 处理重复列名（mootdx财务数据有重复列名）
+            if df is not None and not df.empty:
+                df = self._deduplicate_columns(df)
+
+                # 可选：推断未命名列的名称（默认关闭，可通过配置开启）
+                # df = self._infer_column_names(df, confidence_level='high')
 
             # 缓存到内存（限制缓存大小）
             if len(self._financial_cache) < 10:  # 最多缓存10个报告期
@@ -488,6 +604,33 @@ class MootdxAdapter(BaseDataSource):
         if "." in symbol:
             return symbol.split(".")[0]
         return symbol
+
+    def _convert_from_tdx_symbol(self, tdx_symbol: str) -> str:
+        """
+        将通达信代码转换为标准格式（添加市场后缀）
+
+        Args:
+            tdx_symbol: 通达信代码（6位纯数字，如 "000001"）
+
+        Returns:
+            str: 标准格式代码（如 "000001.SZ"）
+        """
+        code = str(tdx_symbol).strip()
+
+        # 确保是6位代码
+        if len(code) == 6:
+            # 深圳市场：0开头（主板）、3开头（创业板）
+            if code.startswith("0") or code.startswith("3"):
+                return f"{code}.SZ"
+            # 上海市场：6开头（主板）、9开头（科创板）
+            elif code.startswith("6") or code.startswith("9"):
+                return f"{code}.SS"
+            else:
+                # 默认深圳
+                return f"{code}.SZ"
+        else:
+            # 如果已经有后缀或格式不对，直接返回
+            return code
 
     def _get_market_code(self, symbol: str) -> int:
         """
@@ -791,6 +934,99 @@ class MootdxAdapter(BaseDataSource):
         except Exception as e:
             logger.error(f"转换估值数据失败: {e}")
             return {}
+
+    def _deduplicate_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        处理DataFrame的重复列名
+
+        mootdx财务数据中有部分重复列名（如"净资产收益率"出现2次）。
+        此方法通过为重复列添加后缀来去重，例如：
+        - 第1个"净资产收益率" -> "净资产收益率"
+        - 第2个"净资产收益率" -> "净资产收益率_2"
+
+        Args:
+            df: 原始DataFrame
+
+        Returns:
+            DataFrame: 去重后的DataFrame
+        """
+        # 检查是否有重复列名
+        if df.columns.duplicated().any():
+            # 记录原始列数
+            original_col_count = len(df.columns)
+
+            # 创建新列名列表
+            new_columns = []
+            col_counts = {}
+
+            for col in df.columns:
+                # 统计每个列名出现次数
+                if col in col_counts:
+                    col_counts[col] += 1
+                    # 添加后缀
+                    new_col = f"{col}_{col_counts[col]}"
+                    new_columns.append(new_col)
+                    logger.debug(f"重复列名重命名: {col} -> {new_col}")
+                else:
+                    col_counts[col] = 1
+                    new_columns.append(col)
+
+            # 更新DataFrame列名
+            df.columns = new_columns
+
+            # 记录处理结果
+            duplicate_count = original_col_count - len(col_counts)
+            logger.info(
+                f"处理重复列名: {duplicate_count} 个重复列, 原始 {original_col_count} 列 -> 去重后 {len(df.columns)} 列"
+            )
+
+        return df
+
+    def _infer_column_names(
+        self, df: pd.DataFrame, confidence_level: str = "high"
+    ) -> pd.DataFrame:
+        """
+        推断并重命名未命名列（col开头的列）
+
+        mootdx财务数据中有238个未命名列（col323-col560），这是因为官方也不知道这些列的确切含义。
+        此方法基于数据特征分析，为部分列提供推断的名称。
+
+        Args:
+            df: 原始DataFrame
+            confidence_level: 推断确定性等级
+                - 'high': 只重命名高确定性列（如col323-col326）
+                - 'medium': 重命名高+中确定性列
+                - 'low' or 'all': 重命名所有可推断的列
+                - 'none': 不进行推断重命名
+
+        Returns:
+            DataFrame: 重命名后的DataFrame
+        """
+        if confidence_level == "none":
+            return df
+
+        try:
+            from simtradedata.data_sources.mootdx_column_mappings import (
+                rename_columns_with_inference,
+            )
+
+            # 生成重命名映射
+            rename_map = rename_columns_with_inference(df, confidence_level)
+
+            if rename_map:
+                # 应用重命名
+                df = df.rename(columns=rename_map)
+                logger.info(
+                    f"推断列名: 重命名了 {len(rename_map)} 个未命名列 (确定性等级: {confidence_level})"
+                )
+                logger.debug(f"重命名映射: {rename_map}")
+
+        except ImportError:
+            logger.warning("未找到列名映射模块，跳过列名推断")
+        except Exception as e:
+            logger.warning(f"列名推断失败: {e}")
+
+        return df
 
     def _safe_float(self, value, default=0.0):
         """安全的浮点数转换"""

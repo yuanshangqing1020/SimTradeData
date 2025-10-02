@@ -74,6 +74,12 @@ poetry run pytest -m performance  # 性能测试
 | [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) | 项目总结报告 | ✅ 完整 |
 | [TODO.md](docs/TODO.md) | 开发进度跟踪 | ✅ 实时更新 |
 
+### 📖 数据源参考文档
+| 文档 | 描述 | 状态 |
+|------|------|------|
+| [QStock API Reference](docs/reference/QStock_API_Reference.md) | QStock 完整 API 文档 | ✅ 最新 |
+| [QStock API Index](docs/reference/QStock_API_Index.md) | QStock 快速查询索引 | ✅ 最新 |
+
 > 📋 **完整文档索引**: [DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md)
 > 📝 **更新日志**: [CHANGELOG.md](docs/CHANGELOG.md)
 
@@ -97,7 +103,7 @@ poetry run pytest -m performance  # 性能测试
 - **APIRouter** - 高性能查询路由器，支持缓存和并发
 - **DataProcessingEngine** - 全新的数据处理引擎，智能数据融合
 - **SyncManager** - 完整的数据同步系统，支持增量更新和缺口修复
-- **多数据源适配器** - AkShare、BaoStock、QStock智能融合
+- **多数据源适配器** - Mootdx、BaoStock、QStock智能融合
 - **PTrade兼容API** - 完整的接口支持，零学习成本
 
 ## 📊 技术对比

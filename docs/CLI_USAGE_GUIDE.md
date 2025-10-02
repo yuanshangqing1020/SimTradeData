@@ -124,12 +124,15 @@ database:
   path: "data/simtradedata.db"
 
 data_sources:
-  akshare:
-    enabled: true
-    priority: 1
   baostock:
     enabled: true
+    priority: 1
+  mootdx:
+    enabled: true
     priority: 2
+  qstock:
+    enabled: true
+    priority: 3
 
 logging:
   level: "INFO"

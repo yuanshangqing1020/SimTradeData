@@ -217,10 +217,11 @@ class DataSourceManager(BaseManager):
                     continue
                 elif data_type == "ohlcv" and not source["supports_history"]:
                     continue
-                elif (
-                    data_type in ["stock_info", "calendar"]
-                    and not source["supports_history"]
-                ):
+                elif data_type == "stock_info" and not source["supports_history"]:
+                    continue
+                elif data_type == "calendar" and source_name != "baostock":
+                    # 交易日历由BaoStock提供（官方API，权威稳定）
+                    # mootdx不支持交易日历查询
                     continue
                 elif data_type == "adjustment" and source_name != "baostock":
                     # 只有BaoStock支持除权除息数据
@@ -397,7 +398,18 @@ class DataSourceManager(BaseManager):
         if symbol and market is None:
             market = self._parse_market_from_symbol(symbol)
 
-        priorities = self.get_source_priorities(market or "SZ", "1d", "stock_info")
+        # 性能优化：获取所有股票列表时，跳过 mootdx（在线API很慢）
+        # 单个股票查询可以使用 mootdx（从本地通达信数据读取）
+        if symbol is None:
+            # 获取所有股票列表 - 强制使用 BaoStock（快速、权威）
+            priorities = ["baostock"]
+            self.logger.debug(
+                "获取股票列表：强制使用 BaoStock（跳过慢速的 mootdx 在线API）"
+            )
+        else:
+            # 获取单个股票信息 - 使用正常优先级
+            priorities = self.get_source_priorities(market or "SZ", "1d", "stock_info")
+
         return self.get_data_with_fallback("get_stock_info", priorities, symbol)
 
     @unified_error_handler(return_dict=True)
@@ -436,6 +448,97 @@ class DataSourceManager(BaseManager):
             "get_fundamentals", priorities, symbol, report_date, report_type
         )
         return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def batch_import_financial_data(
+        self, report_date: Union[str, date], report_type: str = "Q4"
+    ) -> Dict[str, Any]:
+        """
+        批量导入指定报告期的所有股票财务数据
+
+        此方法专门用于批量导入财务数据，优先使用mootdx（一次性下载所有股票数据），
+        避免了逐个查询的性能问题。
+
+        Args:
+            report_date: 报告期（如 "2019-12-31"）
+            report_type: 报告类型（Q1/Q2/Q3/Q4，默认Q4）
+
+        Returns:
+            Dict[str, Any]: {
+                "success": True/False,
+                "data": [财务数据记录列表],
+                "count": 记录数量,
+                "report_date": 报告期,
+                "report_type": 报告类型,
+                "source": 数据源名称,
+                "error": 错误信息（如果失败）
+            }
+        """
+        if not report_date:
+            raise ValidationError("报告期不能为空")
+
+        # 批量导入优先使用mootdx（一次性下载所有股票数据文件）
+        # 如果mootdx不可用，则尝试其他数据源（但性能会差很多）
+        priorities = ["mootdx", "baostock"]
+
+        self.logger.info(
+            f"开始批量导入财务数据: report_date={report_date}, report_type={report_type}"
+        )
+
+        for source_name in priorities:
+            source = self.get_source(source_name)
+            if not source:
+                self.logger.debug(f"数据源 {source_name} 不可用，尝试下一个")
+                continue
+
+            # 检查是否支持批量导入
+            if not hasattr(source, "batch_import_financial_data"):
+                self.logger.debug(f"数据源 {source_name} 不支持批量导入，尝试下一个")
+                continue
+
+            try:
+                # 确保连接
+                if not source.is_connected():
+                    source.connect()
+
+                # 调用批量导入方法
+                result = source.batch_import_financial_data(report_date, report_type)
+
+                if isinstance(result, dict):
+                    # 添加数据源标识
+                    result["source"] = source_name
+
+                    if result.get("success") and result.get("data"):
+                        self.logger.info(
+                            f"批量导入成功: source={source_name}, "
+                            f"count={result.get('count', 0)}, "
+                            f"success={result.get('success_count', 0)}, "
+                            f"error={result.get('error_count', 0)}"
+                        )
+                        return result
+                    else:
+                        self.logger.warning(
+                            f"数据源 {source_name} 批量导入失败: {result.get('error', 'Unknown error')}"
+                        )
+                else:
+                    self.logger.warning(
+                        f"数据源 {source_name} 返回格式错误: {type(result)}"
+                    )
+
+            except Exception as e:
+                self.logger.error(f"数据源 {source_name} 批量导入异常: {e}")
+                continue
+
+        # 所有数据源都失败
+        error_msg = f"批量导入财务数据失败: 所有数据源均不可用 (尝试: {priorities})"
+        self.logger.error(error_msg)
+        return {
+            "success": False,
+            "data": None,
+            "error": error_msg,
+            "report_date": str(report_date),
+            "report_type": report_type,
+        }
 
     @unified_error_handler(return_dict=True)
     def get_trade_calendar(
@@ -666,6 +769,300 @@ class DataSourceManager(BaseManager):
             "error": "无法从任何数据源获取概念数据",
             "tried_sources": priorities,
         }
+
+    @unified_error_handler(return_dict=True)
+    def get_balance_sheet(
+        self,
+        symbol: str,
+        report_date: Union[str, date] = None,
+        market: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取资产负债表详细科目（QStock提供110+字段）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 资产负债表数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 三大报表详细科目优先使用QStock
+        priorities = ["qstock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "get_balance_sheet", priorities, symbol, report_date
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def get_income_statement(
+        self,
+        symbol: str,
+        report_date: Union[str, date] = None,
+        market: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取利润表详细科目（QStock提供55+字段）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 利润表数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 三大报表详细科目优先使用QStock
+        priorities = ["qstock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "get_income_statement", priorities, symbol, report_date
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def get_cash_flow(
+        self,
+        symbol: str,
+        report_date: Union[str, date] = None,
+        market: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取现金流量表详细科目（QStock提供75+字段）
+
+        Args:
+            symbol: 股票代码
+            report_date: 报表日期，格式'YYYYMMDD'，如'20220630'。为None时返回最新报表
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 现金流量表数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 三大报表详细科目优先使用QStock
+        priorities = ["qstock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "get_cash_flow", priorities, symbol, report_date
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_profit_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频盈利能力数据（BaoStock提供，100%覆盖PTrade profit_ability表）
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 盈利能力数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_profit_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_operation_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频营运能力数据（BaoStock提供，100%覆盖PTrade operating_ability表）
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 营运能力数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_operation_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_growth_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频成长能力数据（BaoStock提供，100%覆盖PTrade growth_ability表）
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 成长能力数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_growth_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_balance_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频偿债能力数据（BaoStock提供，89%覆盖PTrade debt_paying_ability表）
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 偿债能力数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_balance_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_cash_flow_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频现金流量数据
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 现金流量数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_cash_flow_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
+
+    @unified_error_handler(return_dict=True)
+    def query_dupont_data(
+        self, symbol: str, year: int, quarter: int, market: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取季频杜邦指数数据
+
+        Args:
+            symbol: 股票代码
+            year: 统计年份
+            quarter: 统计季度 (1/2/3/4)
+            market: 市场代码
+
+        Returns:
+            Dict[str, Any]: 杜邦指数数据
+        """
+        if not symbol:
+            raise ValidationError("股票代码不能为空")
+
+        if not year or not quarter:
+            raise ValidationError("年份和季度不能为空")
+
+        if market is None:
+            market = self._parse_market_from_symbol(symbol)
+
+        # 季度财务指标优先使用BaoStock
+        priorities = ["baostock"]
+
+        fallback_result = self.get_data_with_fallback(
+            "query_dupont_data", priorities, symbol, year, quarter
+        )
+        return fallback_result
 
     def __del__(self):
         """析构函数"""

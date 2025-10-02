@@ -5,7 +5,7 @@
 为PTrade量化交易平台设计SQLite数据缓存系统，实现：
 - **离线数据访问**: 支持无网络环境下的量化分析
 - **高性能查询**: 毫秒级响应，支持高频策略
-- **多数据源融合**: AkShare、BaoStock、QStock智能组合
+- **多数据源融合**: Mootdx、BaoStock、QStock智能组合
 - **完全兼容**: PTrade API调用方式完全不变
 
 ## 📊 PTrade API完整清单 (64个)
@@ -116,17 +116,16 @@
 
 ## 🗂️ 数据源能力分析
 
-### AkShare (25个API支持，71%)
-**优势**: 实时数据、数据丰富度、ETF数据、港股美股
+### Mootdx (30个API支持，85%)
+**优势**: 本地数据、高性能、深度行情、财务数据
 ```python
-AKSHARE_SUPPORT = {
-    '历史行情': ['get_history', 'get_price'],
-    '实时数据': ['get_snapshot', 'get_tick', 'get_current_tick'],
-    '股票信息': ['get_Ashares', 'get_stock_info', 'get_all_securities'],
-    '板块数据': ['get_stock_blocks', 'get_index_stocks'],
-    'ETF数据': ['get_etf_info', 'get_etf_stocks', 'get_etf_list'],
-    '港股美股': ['HK', 'US市场支持'],
-    '技术指标': ['get_macd', 'get_kdj', 'get_rsi'],
+MOOTDX_SUPPORT = {
+    '历史行情': ['get_history', 'get_price', '分钟线'],
+    '实时数据': ['get_snapshot', '逐笔委托', '逐笔成交'],
+    '股票信息': ['get_Ashares', 'get_stock_info'],
+    '财务数据': ['FINVALUE 322个字段'],
+    '深度行情': ['逐笔委托', '逐笔成交'],
+    '性能': ['本地读取10-100倍提升'],
 }
 ```
 
@@ -137,7 +136,7 @@ BAOSTOCK_SUPPORT = {
     '历史行情': ['get_history', 'get_price'],
     '交易日历': ['get_trade_days', 'get_all_trade_days'],
     '股票信息': ['get_Ashares', 'get_stock_info'],
-    '财务数据': ['get_fundamentals'],
+    '财务数据': ['get_fundamentals', '6个季频指标'],
     '复权数据': ['除权除息信息'],
     '板块数据': ['get_stock_blocks', 'get_industry'],
     '数据质量': ['高质量历史数据', '数据完整性好'],
@@ -190,30 +189,30 @@ QSTOCK_SUPPORT = {
 ```python
 DATA_SOURCE_PRIORITY = {
     # 历史数据 - BaoStock数据质量最好
-    'get_history': ['BaoStock', 'AkShare', 'QStock'],
-    'get_price': ['BaoStock', 'AkShare', 'QStock'],
-    
-    # 实时数据 - AkShare更新最及时
-    'get_snapshot': ['AkShare', 'QStock'],
-    'get_tick': ['AkShare', 'QStock'],
-    
+    'get_history': ['BaoStock', 'Mootdx', 'QStock'],
+    'get_price': ['BaoStock', 'Mootdx', 'QStock'],
+
+    # 实时数据 - Mootdx本地数据最快
+    'get_snapshot': ['Mootdx', 'QStock'],
+    'get_tick': ['Mootdx', 'QStock'],
+
     # 基础信息 - BaoStock最完整
-    'get_Ashares': ['BaoStock', 'AkShare', 'QStock'],
-    'get_stock_info': ['BaoStock', 'AkShare', 'QStock'],
-    
-    # 财务数据 - BaoStock最权威
-    'get_fundamentals': ['BaoStock', 'AkShare'],
-    
+    'get_Ashares': ['BaoStock', 'Mootdx', 'QStock'],
+    'get_stock_info': ['BaoStock', 'Mootdx', 'QStock'],
+
+    # 财务数据 - BaoStock和Mootdx互补
+    'get_fundamentals': ['BaoStock', 'Mootdx', 'QStock'],
+
     # 板块数据 - QStock概念板块丰富
-    'get_stock_blocks': ['QStock', 'BaoStock', 'AkShare'],
-    'get_concept': ['QStock', 'AkShare'],
-    
-    # ETF数据 - AkShare支持最好
-    'get_etf_info': ['AkShare', 'BaoStock'],
-    'get_etf_stocks': ['AkShare', 'BaoStock'],
-    
+    'get_stock_blocks': ['QStock', 'BaoStock', 'Mootdx'],
+    'get_concept': ['QStock', 'Mootdx'],
+
+    # ETF数据 - QStock支持
+    'get_etf_info': ['QStock', 'BaoStock'],
+    'get_etf_stocks': ['QStock', 'BaoStock'],
+
     # 交易日历 - BaoStock最准确
-    'get_trade_days': ['BaoStock', 'AkShare'],
+    'get_trade_days': ['BaoStock', 'Mootdx'],
 }
 ```
 
@@ -222,16 +221,16 @@ DATA_SOURCE_PRIORITY = {
 ```python
 MARKET_DATA_SOURCE = {
     'A股 (SZ/SS)': {
-        '主要': ['BaoStock', 'AkShare', 'QStock'],
-        '特色': 'BaoStock历史数据质量最高'
+        '主要': ['BaoStock', 'Mootdx', 'QStock'],
+        '特色': 'BaoStock历史数据质量最高，Mootdx本地性能最优'
     },
     '港股 (HK)': {
-        '主要': ['AkShare'],
-        '特色': 'AkShare是主要港股数据源'
+        '主要': ['QStock'],
+        '特色': 'QStock支持港股市场数据'
     },
     '美股 (US)': {
-        '主要': ['AkShare'],
-        '特色': 'AkShare是主要美股数据源'
+        '主要': ['QStock'],
+        '特色': 'QStock支持美股市场数据'
     }
 }
 ```

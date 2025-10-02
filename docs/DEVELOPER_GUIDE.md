@@ -23,8 +23,8 @@ SimTradeData/
 │   │   └── query_builders.py           # SQL查询构建器
 │   ├── 📁 data_sources/                # 数据源层
 │   │   ├── manager.py                  # 数据源管理器
-│   │   ├── akshare_adapter.py          # AkShare适配器
 │   │   ├── baostock_adapter.py         # BaoStock适配器
+│   │   ├── mootdx_adapter.py           # Mootdx适配器
 │   │   └── qstock_adapter.py           # QStock适配器
 │   ├── 📁 sync/                        # 数据同步层
 │   │   ├── manager.py                  # 同步管理器
@@ -103,19 +103,19 @@ graph TD
 # 数据源配置
 data_sources:
   # 各数据源基本配置
-  akshare:
-    enabled: true
-    timeout: 10
-    retry_times: 3
-    retry_delay: 1
-    rate_limit: 100  # 每分钟请求数限制
-
   baostock:
     enabled: true
     timeout: 15
     retry_times: 3
     retry_delay: 2
     rate_limit: 200
+
+  mootdx:
+    enabled: true
+    timeout: 10
+    retry_times: 3
+    retry_delay: 1
+    rate_limit: 300
 
   qstock:
     enabled: true
@@ -127,8 +127,8 @@ data_sources:
   # 数据源优先级配置（可选）
   source_priorities:
     # 自定义特定场景的优先级
-    "SZ_1d_ohlcv": ["baostock", "qstock", "akshare"]
-    "SS_5m_ohlcv": ["qstock", "baostock", "akshare"]
+    "SZ_1d_ohlcv": ["baostock", "qstock", "mootdx"]
+    "SS_5m_ohlcv": ["mootdx", "qstock", "baostock"]
 
   # 其他配置
   max_retry_attempts: 3
@@ -146,7 +146,7 @@ config = Config()
 
 # 动态修改数据源优先级
 config.set('data_sources.source_priorities.SZ_1d_ohlcv',
-          ['baostock', 'akshare', 'qstock'])
+          ['baostock', 'mootdx', 'qstock'])
 
 # 禁用某个数据源
 config.set('data_sources.qstock.enabled', False)
@@ -574,18 +574,18 @@ SimTradeData支持多个数据源，并采用优先级机制来确保数据质�
 
 | 数据类型 | 第一优先级 | 第二优先级 | 第三优先级 |
 |---------|-----------|-----------|-----------|
-| OHLCV行情 | BaoStock | QStock | AkShare |
-| 股票信息 | BaoStock | QStock | AkShare |
-| 估值数据 | BaoStock | QStock | AkShare |
-| 财务数据 | BaoStock | - | AkShare |
-| 交易日历 | BaoStock | - | AkShare |
+| OHLCV行情 | BaoStock | Mootdx | QStock |
+| 股票信息 | BaoStock | QStock | Mootdx |
+| 估值数据 | BaoStock | QStock | - |
+| 财务数据 | BaoStock | Mootdx | QStock |
+| 交易日历 | BaoStock | - | - |
 | 除权除息 | BaoStock | - | - |
 
 #### 优先级设计原则
 
 1. **稳定性第一**: BaoStock数据质量高且稳定，作为首选
-2. **性能考量**: QStock性能优异，作为第二选择
-3. **备用保障**: AkShare作为最后备用，确保数据可用性
+2. **性能考量**: Mootdx性能优异，作为第二选择
+3. **备用保障**: QStock作为备用，确保数据可用性
 
 #### 修改数据源优先级
 
@@ -602,11 +602,11 @@ def get_source_priorities(self, market: str, frequency: str, data_type: str) -> 
     if key in priority_config:
         return priority_config[key]
 
-    # 默认优先级策略 - akshare优先级降到最低
+    # 默认优先级策略
     if data_type == "ohlcv":
-        return ["baostock", "qstock", "akshare"]
+        return ["baostock", "mootdx", "qstock"]
     elif data_type == "fundamentals":
-        return ["baostock", "akshare"]  # 财务数据只有这两个源
+        return ["baostock", "mootdx", "qstock"]
     # ... 其他数据类型配置
 ```
 
@@ -618,9 +618,9 @@ def get_source_priorities(self, market: str, frequency: str, data_type: str) -> 
 data_sources:
   source_priorities:
     # 自定义深圳市场日线OHLCV数据优先级
-    "SZ_1d_ohlcv": ["baostock", "akshare", "qstock"]
+    "SZ_1d_ohlcv": ["baostock", "mootdx", "qstock"]
     # 自定义上海市场分钟线数据优先级
-    "SS_5m_ohlcv": ["qstock", "baostock", "akshare"]
+    "SS_5m_ohlcv": ["mootdx", "qstock", "baostock"]
 ```
 
 #### 数据源状态监控
@@ -748,8 +748,8 @@ def _register_adapters(self):
     from .custom_source import CustomDataSource
 
     self.adapter_classes = {
-        "akshare": AkShareAdapter,
         "baostock": BaoStockAdapter,
+        "mootdx": MootdxAdapter,
         "qstock": QStockAdapter,
         "custom": CustomDataSource,  # 添加自定义数据源
     }

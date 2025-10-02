@@ -36,7 +36,7 @@ PRODUCTION_CONFIG = {
     "data_sources": {
         "mootdx": {
             "enabled": True,
-            "tdx_dir": "C:/new_tdx",
+            "tdx_dir": "/mnt/c/new_tdx",
             "use_online": True,
             "market": "std",
             "timeout": 30,  # 增加超时

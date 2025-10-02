@@ -48,7 +48,7 @@ markets:
 data_sources:
   mootdx:
     enabled: true
-    tdx_dir: "C:/new_tdx"  # 通达信安装目录
+    tdx_dir: "/mnt/c/new_tdx"  # 通达信安装目录
     use_online: true        # 是否使用在线接口
     market: "std"           # std=标准市场, ext=扩展市场
     timeout: 10
