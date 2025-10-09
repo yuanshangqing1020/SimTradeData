@@ -613,9 +613,9 @@ class TestSafeExtractNumeric:
             db_manager, data_source_manager, processing_engine, config
         )
 
-        assert manager._safe_extract_numeric(123.45) == 123.45
-        assert manager._safe_extract_numeric("123.45") == 123.45
-        assert manager._safe_extract_numeric(0) == 0.0
+        assert manager._safe_extract_number(123.45, 0.0) == 123.45
+        assert manager._safe_extract_number("123.45", 0.0) == 123.45
+        assert manager._safe_extract_number(0, 0.0) == 0.0
 
     def test_extract_none_returns_default(self, mock_components):
         """测试 None 返回默认值"""
@@ -624,8 +624,8 @@ class TestSafeExtractNumeric:
             db_manager, data_source_manager, processing_engine, config
         )
 
-        assert manager._safe_extract_numeric(None) == 0.0
-        assert manager._safe_extract_numeric(None, 999.0) == 999.0
+        assert manager._safe_extract_number(None, 0.0) == 0.0
+        assert manager._safe_extract_number(None, 999.0) == 999.0
 
     def test_extract_dict_returns_default(self, mock_components):
         """测试字典类型返回默认值"""
@@ -634,7 +634,7 @@ class TestSafeExtractNumeric:
             db_manager, data_source_manager, processing_engine, config
         )
 
-        assert manager._safe_extract_numeric({"value": 123}) == 0.0
+        assert manager._safe_extract_number({"value": 123}, 0.0) == 0.0
 
     def test_extract_list_returns_default(self, mock_components):
         """测试列表类型返回默认值"""
@@ -643,7 +643,7 @@ class TestSafeExtractNumeric:
             db_manager, data_source_manager, processing_engine, config
         )
 
-        assert manager._safe_extract_numeric([123, 456]) == 0.0
+        assert manager._safe_extract_number([123, 456], 0.0) == 0.0
 
 
 class TestSafeExtractNumber:
@@ -880,70 +880,77 @@ class TestIsValidFinancialDataRelaxed:
 
     def test_valid_with_revenue(self, mock_components):
         """测试有营收的数据为有效"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
-        assert manager._is_valid_financial_data_relaxed({"revenue": 1000000}) is True
+        assert (
+            DataQualityValidator.is_valid_financial_data(
+                {"revenue": 1000000}, strict=False
+            )
+            is True
+        )
 
     def test_valid_with_net_profit(self, mock_components):
         """测试有净利润的数据为有效（可以为负）"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
-        assert manager._is_valid_financial_data_relaxed({"net_profit": -100000}) is True
-        assert manager._is_valid_financial_data_relaxed({"net_profit": 0}) is True
+        assert (
+            DataQualityValidator.is_valid_financial_data(
+                {"net_profit": -100000}, strict=False
+            )
+            is True
+        )
+        assert (
+            DataQualityValidator.is_valid_financial_data(
+                {"net_profit": 0}, strict=False
+            )
+            is True
+        )
 
     def test_valid_with_total_assets(self, mock_components):
         """测试有总资产的数据为有效"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
         assert (
-            manager._is_valid_financial_data_relaxed({"total_assets": 5000000}) is True
+            DataQualityValidator.is_valid_financial_data(
+                {"total_assets": 5000000}, strict=False
+            )
+            is True
         )
 
     def test_valid_with_eps(self, mock_components):
         """测试有EPS的数据为有效"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
-        assert manager._is_valid_financial_data_relaxed({"eps": 1.5}) is True
-        assert manager._is_valid_financial_data_relaxed({"eps": 0}) is True
+        assert (
+            DataQualityValidator.is_valid_financial_data({"eps": 1.5}, strict=False)
+            is True
+        )
+        assert (
+            DataQualityValidator.is_valid_financial_data({"eps": 0}, strict=False)
+            is True
+        )
 
     def test_invalid_empty_data(self, mock_components):
         """测试空数据为无效"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
-        assert manager._is_valid_financial_data_relaxed({}) is False
-        assert manager._is_valid_financial_data_relaxed(None) is False
+        assert DataQualityValidator.is_valid_financial_data({}, strict=False) is False
+        assert DataQualityValidator.is_valid_financial_data(None, strict=False) is False
 
     def test_invalid_all_none(self, mock_components):
         """测试所有字段都为None的数据为无效"""
-        db_manager, data_source_manager, processing_engine, config = mock_components
-        manager = SyncManager(
-            db_manager, data_source_manager, processing_engine, config
-        )
+        from simtradedata.sync.manager import DataQualityValidator
 
         assert (
-            manager._is_valid_financial_data_relaxed(
+            DataQualityValidator.is_valid_financial_data(
                 {
                     "revenue": None,
                     "net_profit": None,
                     "total_assets": None,
                     "shareholders_equity": None,
                     "eps": None,
-                }
+                },
+                strict=False,
             )
             is False
         )

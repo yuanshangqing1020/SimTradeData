@@ -8,7 +8,7 @@
 import logging
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 # 项目内导入
@@ -60,8 +60,16 @@ class DataQualityValidator:
     """数据质量验证器"""
 
     @staticmethod
-    def is_valid_financial_data(data: Dict[str, Any]) -> bool:
-        """验证财务数据有效性"""
+    def is_valid_financial_data(data: Dict[str, Any], strict: bool = True) -> bool:
+        """验证财务数据有效性
+
+        Args:
+            data: 财务数据字典
+            strict: 严格模式要求主要指标>0, 宽松模式只要求非None
+
+        Returns:
+            bool: 数据是否有效
+        """
         if not data or not isinstance(data, dict):
             return False
 
@@ -69,14 +77,26 @@ class DataQualityValidator:
         revenue = data.get("revenue")
         net_profit = data.get("net_profit")
         total_assets = data.get("total_assets")
+        shareholders_equity = data.get("shareholders_equity")
+        eps = data.get("eps")
 
-        # 至少要有一个非零的主要财务指标
-        # 注意：净利润可以为负（亏损公司），但不能为 None
-        return (
-            (revenue is not None and revenue > 0)
-            or (total_assets is not None and total_assets > 0)
-            or (net_profit is not None and net_profit != 0)  # 净利润可以为负
-        )
+        if strict:
+            # 严格模式：至少要有一个非零的主要财务指标
+            # 注意：净利润可以为负（亏损公司），但不能为 None
+            return (
+                (revenue is not None and revenue > 0)
+                or (total_assets is not None and total_assets > 0)
+                or (net_profit is not None and net_profit != 0)  # 净利润可以为负
+            )
+        else:
+            # 宽松模式：只要有一个字段不为None就认为有效（允许0值）
+            return (
+                revenue is not None
+                or net_profit is not None
+                or total_assets is not None
+                or shareholders_equity is not None
+                or eps is not None
+            )
 
     @staticmethod
     def is_valid_valuation_data(data: Dict[str, Any]) -> bool:
@@ -166,10 +186,8 @@ class SyncManager(BaseManager):
         self.enable_validation = self._get_config("enable_validation", True)
         self.max_gap_fix_days = self._get_config("max_gap_fix_days", 7)
 
-        # 性能优化配置
-        self.batch_size = self._get_config("batch_size", 100)
-        self.enable_cache = self._get_config("enable_cache", True)
-        self.cache_ttl = self._get_config("cache_ttl", 3600)  # 1小时
+        # 注意: batch_size, enable_cache, cache_ttl 已在 ConfigMixin 的 _init_performance_config() 和 _init_base_config() 中设置
+        # 无需在此重复设置
 
     def _init_components(self):
         """初始化子组件"""
@@ -850,8 +868,6 @@ class SyncManager(BaseManager):
                 return []
 
             # 清理过期的pending状态（使用 UTC 时间确保一致性）
-            from datetime import UTC, datetime, timedelta
-
             cleanup_threshold = (datetime.now(UTC) - timedelta(days=1)).isoformat()
             cursor = self.db_manager.execute(
                 """
@@ -873,8 +889,6 @@ class SyncManager(BaseManager):
             ]
 
             # 估值数据：检查目标日期前后10天范围
-            from datetime import timedelta
-
             valuation_start = str(target_date - timedelta(days=10))
             valuation_end = str(target_date + timedelta(days=10))
 
@@ -900,7 +914,7 @@ class SyncManager(BaseManager):
             status_data AS (
                 SELECT DISTINCT symbol, status FROM extended_sync_status
                 WHERE symbol IN ({placeholders})
-                AND target_date = ? AND status IN ('completed', 'partial', 'failed')
+                AND status IN ('completed', 'partial', 'failed')
             )
             SELECT 
                 sl.symbol,
@@ -921,7 +935,6 @@ class SyncManager(BaseManager):
                 + tuple(symbols)
                 + (valuation_start, valuation_end)
                 + tuple(symbols)
-                + (str(target_date),)
             )
             results = self.db_manager.fetchall(data_completeness_query, query_params)
 
@@ -961,10 +974,10 @@ class SyncManager(BaseManager):
 
                 # 智能状态修复：修复而不是删除
                 if marked_completed and actual_status != "completed":
-                    # 状态不一致，需要修复
+                    # 状态不一致，需要修复（仅基于数据存在性，不依赖target_date）
                     self.db_manager.execute(
-                        "UPDATE extended_sync_status SET status = ?, updated_at = datetime('now') WHERE symbol = ? AND target_date = ?",
-                        (actual_status, symbol, str(target_date)),
+                        "UPDATE extended_sync_status SET status = ?, updated_at = datetime('now') WHERE symbol = ?",
+                        (actual_status, symbol),
                     )
                     repaired_symbols.append(symbol)
                     stats["status_repaired"] += 1
@@ -1028,8 +1041,6 @@ class SyncManager(BaseManager):
         years_to_update = list(range(needed_start_year, needed_end_year + 1))
 
         if existing_range and existing_range["count"] > 0:
-            from datetime import datetime
-
             existing_min = datetime.strptime(
                 existing_range["min_date"], "%Y-%m-%d"
             ).date()
@@ -1144,8 +1155,6 @@ class SyncManager(BaseManager):
             target_date: 目标日期，用于获取该日期的股票列表
         """
         if target_date is None:
-            from datetime import datetime
-
             target_date = datetime.now().date()
 
         self.logger.info("🔄 开始股票列表增量更新（优化版本）...")
@@ -1157,8 +1166,6 @@ class SyncManager(BaseManager):
             )
 
             # 如果今天已经更新过，且股票数量合理，跳过更新
-            from datetime import datetime, timedelta
-
             today = datetime.now().date()
 
             if last_update and last_update["last_update"]:
@@ -1217,6 +1224,7 @@ class SyncManager(BaseManager):
                 baostock_source.connect()
 
             # 调用BaoStock的get_stock_info，支持target_date参数
+            # type: ignore - BaoStock适配器确实支持target_date参数,但Pylance无法推断具体类型
             stock_info = baostock_source.get_stock_info(
                 symbol=None, target_date=str(target_date)
             )
@@ -1593,7 +1601,18 @@ class SyncManager(BaseManager):
         Returns:
             转换后的数字或默认值
         """
+        # 处理None或空字符串
         if value is None or value == "":
+            return default
+
+        # 处理字典类型（错误情况）
+        if isinstance(value, dict):
+            self.logger.debug(f"财务数据包含字典类型: {value}，使用默认值")
+            return default
+
+        # 处理列表类型（错误情况）
+        if isinstance(value, (list, tuple)):
+            self.logger.debug(f"财务数据包含列表类型: {value}，使用默认值")
             return default
 
         try:
@@ -2042,8 +2061,11 @@ class SyncManager(BaseManager):
                             )
 
                         # 使用放宽的验证标准
-                        if financial_data and self._is_valid_financial_data_relaxed(
+                        if (
                             financial_data
+                            and DataQualityValidator.is_valid_financial_data(
+                                financial_data, strict=False
+                            )
                         ):
                             self._insert_financial_data(
                                 financial_data, symbol, report_date_str, data_source
@@ -2219,8 +2241,6 @@ class SyncManager(BaseManager):
 
             # 检查缺口是否在股票上市日期之后
             if stock_info["list_date"]:
-                from datetime import datetime
-
                 list_date = datetime.strptime(
                     stock_info["list_date"], "%Y-%m-%d"
                 ).date()
@@ -2290,59 +2310,6 @@ class SyncManager(BaseManager):
 
         return fix_result
 
-    def _is_valid_financial_data_relaxed(self, data: Dict[str, Any]) -> bool:
-        """放宽的财务数据有效性验证"""
-        if not data or not isinstance(data, dict):
-            return False
-
-        # 检查是否有任何有效的财务指标（放宽标准）
-        revenue = data.get("revenue")
-        net_profit = data.get("net_profit")
-        total_assets = data.get("total_assets")
-        shareholders_equity = data.get("shareholders_equity")
-        eps = data.get("eps")
-
-        # 只要有一个字段不为None就认为有效（允许0值）
-        return (
-            revenue is not None
-            or net_profit is not None
-            or total_assets is not None
-            or shareholders_equity is not None
-            or eps is not None
-        )
-
-    def _safe_extract_numeric(self, value: Any, default: float = 0.0) -> float:
-        """
-        安全提取数值，处理各种异常情况
-
-        Args:
-            value: 待转换的值
-            default: 默认值
-
-        Returns:
-            浮点数或默认值
-        """
-        # 处理None或空字符串
-        if value is None or value == "":
-            return default
-
-        # 处理字典类型（错误情况）
-        if isinstance(value, dict):
-            self.logger.debug(f"财务数据包含字典类型: {value}，使用默认值")
-            return default
-
-        # 处理列表类型（错误情况）
-        if isinstance(value, (list, tuple)):
-            self.logger.debug(f"财务数据包含列表类型: {value}，使用默认值")
-            return default
-
-        # 尝试转换为浮点数
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            self.logger.debug(f"无法转换为数值: {value}，使用默认值")
-            return default
-
     def _insert_financial_data(
         self,
         financial_data: Dict[str, Any],
@@ -2364,30 +2331,34 @@ class SyncManager(BaseManager):
                     symbol,
                     report_date_str,
                     "Q4",
-                    self._safe_extract_numeric(financial_data.get("revenue")),
-                    self._safe_extract_numeric(financial_data.get("operating_profit")),
-                    self._safe_extract_numeric(financial_data.get("net_profit")),
-                    self._safe_extract_numeric(financial_data.get("gross_margin")),
-                    self._safe_extract_numeric(financial_data.get("net_margin")),
-                    self._safe_extract_numeric(financial_data.get("total_assets")),
-                    self._safe_extract_numeric(financial_data.get("total_liabilities")),
-                    self._safe_extract_numeric(
-                        financial_data.get("shareholders_equity")
+                    self._safe_extract_number(financial_data.get("revenue"), 0.0),
+                    self._safe_extract_number(
+                        financial_data.get("operating_profit"), 0.0
                     ),
-                    self._safe_extract_numeric(
-                        financial_data.get("operating_cash_flow")
+                    self._safe_extract_number(financial_data.get("net_profit"), 0.0),
+                    self._safe_extract_number(financial_data.get("gross_margin"), 0.0),
+                    self._safe_extract_number(financial_data.get("net_margin"), 0.0),
+                    self._safe_extract_number(financial_data.get("total_assets"), 0.0),
+                    self._safe_extract_number(
+                        financial_data.get("total_liabilities"), 0.0
                     ),
-                    self._safe_extract_numeric(
-                        financial_data.get("investing_cash_flow")
+                    self._safe_extract_number(
+                        financial_data.get("shareholders_equity"), 0.0
                     ),
-                    self._safe_extract_numeric(
-                        financial_data.get("financing_cash_flow")
+                    self._safe_extract_number(
+                        financial_data.get("operating_cash_flow"), 0.0
                     ),
-                    self._safe_extract_numeric(financial_data.get("eps")),
-                    self._safe_extract_numeric(financial_data.get("bps")),
-                    self._safe_extract_numeric(financial_data.get("roe")),
-                    self._safe_extract_numeric(financial_data.get("roa")),
-                    self._safe_extract_numeric(financial_data.get("debt_ratio")),
+                    self._safe_extract_number(
+                        financial_data.get("investing_cash_flow"), 0.0
+                    ),
+                    self._safe_extract_number(
+                        financial_data.get("financing_cash_flow"), 0.0
+                    ),
+                    self._safe_extract_number(financial_data.get("eps"), 0.0),
+                    self._safe_extract_number(financial_data.get("bps"), 0.0),
+                    self._safe_extract_number(financial_data.get("roe"), 0.0),
+                    self._safe_extract_number(financial_data.get("roa"), 0.0),
+                    self._safe_extract_number(financial_data.get("debt_ratio"), 0.0),
                     source,
                 ),
             )

@@ -197,21 +197,40 @@ class DataProcessingEngine(BaseManager):
             # 计算衍生字段
             df = self._calculate_derived_fields(df, symbol)
 
-            # 批量存储到数据库
-            records_stored = 0
+            # 批量准备数据
+            batch_records = []
             for row_idx, (_, row) in enumerate(df.iterrows()):
                 try:
                     # 转换为字典并验证
                     row_dict = row.to_dict()
                     validated_data = self._validate_and_prepare_data(row_dict)
 
-                    # 存储数据
-                    self._store_enhanced_market_data(
-                        validated_data, symbol, row_dict.get("date")
+                    # 准备批量插入的参数
+                    params = (
+                        symbol,
+                        str(row_dict.get("date")),
+                        "1d",
+                        validated_data.get("open") or 0,
+                        validated_data.get("high") or 0,
+                        validated_data.get("low") or 0,
+                        validated_data.get("close") or 0,
+                        validated_data.get("volume") or 0,
+                        validated_data.get("amount") or 0,
+                        validated_data.get("prev_close"),
+                        validated_data.get("change_amount") or 0,
+                        validated_data.get("change_percent") or 0,
+                        validated_data.get("amplitude") or 0,
+                        validated_data.get("turnover_rate"),
+                        validated_data.get("high_limit"),
+                        validated_data.get("low_limit"),
+                        validated_data.get("is_limit_up") or False,
+                        validated_data.get("is_limit_down") or False,
+                        "processed_enhanced",
+                        100,  # 默认质量分数
                     )
 
+                    batch_records.append(params)
                     result["processed_dates"].append(str(row_dict.get("date")))
-                    records_stored += 1
 
                 except Exception as e:
                     self._log_error(
@@ -223,7 +242,12 @@ class DataProcessingEngine(BaseManager):
                     )
                     result["failed_dates"].append(str(row.get("date", "unknown")))
 
-            return records_stored
+            # 批量插入数据 - 使用重试机制
+            if batch_records:
+                records_stored = self._batch_store_market_data(batch_records)
+                return records_stored
+
+            return 0
 
         except Exception as e:
             self._log_error("_process_dataframe_data", e, symbol=symbol)
@@ -434,7 +458,7 @@ class DataProcessingEngine(BaseManager):
         """存储增强的市场数据（包含衍生字段）"""
         sql = """
         INSERT OR REPLACE INTO market_data (
-            symbol, date, frequency, open, high, low, close, volume, amount, 
+            symbol, date, frequency, open, high, low, close, volume, amount,
             prev_close, change_amount, change_percent, amplitude, turnover_rate,
             high_limit, low_limit, is_limit_up, is_limit_down, source, quality_score
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -464,6 +488,42 @@ class DataProcessingEngine(BaseManager):
         )
 
         self.db_manager.execute(sql, params)
+
+    def _batch_store_market_data(self, batch_records: List[tuple]) -> int:
+        """批量存储市场数据,带重试机制"""
+        import time
+
+        sql = """
+        INSERT OR REPLACE INTO market_data (
+            symbol, date, frequency, open, high, low, close, volume, amount,
+            prev_close, change_amount, change_percent, amplitude, turnover_rate,
+            high_limit, low_limit, is_limit_up, is_limit_down, source, quality_score
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        max_retries = 3
+        retry_delay = 0.1  # 100ms
+
+        for attempt in range(max_retries):
+            try:
+                self.db_manager.executemany(sql, batch_records)
+                return len(batch_records)
+            except Exception as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    # 数据库锁定,等待后重试
+                    self.logger.debug(
+                        f"数据库锁定,等待{retry_delay}秒后重试(尝试{attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                else:
+                    # 其他错误或最后一次重试失败
+                    self._log_error(
+                        "_batch_store_market_data", e, batch_size=len(batch_records)
+                    )
+                    raise
+
+        return 0
 
     def _validate_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """数据验证和清洗"""

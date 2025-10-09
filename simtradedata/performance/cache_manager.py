@@ -774,7 +774,7 @@ class CacheManager(BaseManager):
                 # 查询股票基本信息
                 placeholders = ",".join(["?" for _ in symbols])
                 sql = f"""
-                SELECT symbol, name, industry, list_date, status
+                SELECT symbol, name, industry_l1, industry_l2, list_date, status
                 FROM stocks
                 WHERE symbol IN ({placeholders})
                 """
@@ -789,8 +789,11 @@ class CacheManager(BaseManager):
                     metadata = {
                         "symbol": row["symbol"],
                         "name": row["name"] if "name" in row.keys() else None,
-                        "industry": (
-                            row["industry"] if "industry" in row.keys() else None
+                        "industry_l1": (
+                            row["industry_l1"] if "industry_l1" in row.keys() else None
+                        ),
+                        "industry_l2": (
+                            row["industry_l2"] if "industry_l2" in row.keys() else None
                         ),
                         "list_date": (
                             row["list_date"] if "list_date" in row.keys() else None

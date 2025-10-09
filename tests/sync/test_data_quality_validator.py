@@ -248,20 +248,33 @@ class TestDataQualityValidator:
 
 
 class TestFinancialDataRelaxedValidation:
-    """测试宽松的财务数据验证（如果存在 _is_valid_financial_data_relaxed 方法）"""
+    """测试宽松的财务数据验证（strict=False 参数）"""
 
-    def test_relaxed_validation_exists(self):
-        """测试 _is_valid_financial_data_relaxed 方法是否存在"""
-        # 检查 SyncManager 中是否有这个方法
-        from simtradedata.sync.manager import SyncManager
+    def test_relaxed_validation_with_revenue(self):
+        """测试宽松模式下有营收的数据为有效"""
+        data = {"revenue": 1000000}
+        assert DataQualityValidator.is_valid_financial_data(data, strict=False) is True
 
-        # 如果方法存在，进行测试
-        if hasattr(SyncManager, "_is_valid_financial_data_relaxed"):
-            # 注意：这是私有方法，需要通过实例访问
-            # 这里只是检查方法存在性
-            assert callable(getattr(SyncManager, "_is_valid_financial_data_relaxed"))
-        else:
-            pytest.skip("_is_valid_financial_data_relaxed 方法不存在")
+    def test_relaxed_validation_with_zero_revenue(self):
+        """测试宽松模式下零营收也有效（只要不是None）"""
+        data = {"revenue": 0}
+        assert DataQualityValidator.is_valid_financial_data(data, strict=False) is True
+
+    def test_relaxed_validation_with_negative_profit(self):
+        """测试宽松模式下负净利润有效"""
+        data = {"net_profit": -100000}
+        assert DataQualityValidator.is_valid_financial_data(data, strict=False) is True
+
+    def test_relaxed_validation_invalid_all_none(self):
+        """测试宽松模式下所有字段为None仍然无效"""
+        data = {
+            "revenue": None,
+            "net_profit": None,
+            "total_assets": None,
+            "shareholders_equity": None,
+            "eps": None,
+        }
+        assert DataQualityValidator.is_valid_financial_data(data, strict=False) is False
 
 
 # 参数化测试 - 边界情况组合测试
