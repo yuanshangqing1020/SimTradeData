@@ -152,7 +152,7 @@ class BaoStockAdapter(BaseDataSource):
                     or "用户未登录" in rs.error_msg
                     or "未登录" in rs.error_msg
                 ):
-                    logger.warning(
+                    logger.debug(
                         f"检测到BaoStock会话过期: {rs.error_msg}，尝试重新建立连接..."
                     )
                     # 标记为未连接，强制重连
