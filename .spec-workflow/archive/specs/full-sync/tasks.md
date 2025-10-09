@@ -293,7 +293,7 @@
 
 ## 阶段 9: 文档和示例
 
-- [ ] 9.1 更新 API 文档
+- [x] 9.1 更新 API 文档
   - 文件: `docs/api/sync_manager.md` (新建或更新)
   - 文档化 run_full_sync 方法
   - 添加参数说明和返回值说明
@@ -302,7 +302,7 @@
   - _Requirements: 需求 8_
   - _Prompt: Implement the task for spec full-sync, first run spec-workflow-guide to get the workflow guide then implement the task: Role: 技术文档工程师，精通 API 文档编写 | Task: 创建或更新 docs/api/sync_manager.md，文档化 run_full_sync 方法，包括：方法签名、参数说明（target_date, symbols, frequencies）、返回值说明（完整的 JSON 结构和字段含义）、异常说明、使用示例（首次同步、增量同步、断点续传），遵循 Markdown 格式和现有文档风格 | Restrictions: 遵循现有文档结构；使用中文；提供可运行的代码示例 | Success: API 文档完整清晰，示例代码可运行，用户能轻松理解和使用_
 
-- [ ] 9.2 编写使用指南
+- [x] 9.2 编写使用指南
   - 文件: `docs/guides/full_sync_guide.md` (新建)
   - 编写完整的使用指南
   - 添加最佳实践建议
@@ -311,7 +311,7 @@
   - _Requirements: 所有需求_
   - _Prompt: Implement the task for spec full-sync, first run spec-workflow-guide to get the workflow guide then implement the task: Role: 技术文档专家，精通用户指南编写 | Task: 创建 docs/guides/full_sync_guide.md，编写完整的 Full-Sync 使用指南，包括：1) 功能概述，2) 快速开始（CLI 命令和 Python API），3) 配置选项说明，4) 最佳实践（何时使用批量模式、如何优化性能、断点续传建议），5) 故障排查（常见错误和解决方案），6) 性能优化建议 | Restrictions: 使用中文；提供实际可运行的示例；遵循 Markdown 格式 | Success: 使用指南完整实用，用户能快速上手，故障排查有效_
 
-- [ ] 9.3 更新架构文档
+- [x] 9.3 更新架构文档
   - 文件: `docs/architecture/sync_architecture.md` (更新)
   - 更新 Full-Sync 架构描述
   - 添加流程图和序列图
@@ -342,7 +342,7 @@
   - _Requirements: 所有需求_
   - _测试时间: 2025-10-07_
 
-- [ ] 10.2 执行性能验证测试
+- [x] 10.2 执行性能验证测试
   - 运行性能基准测试
   - 验证性能目标达标
   - 生成性能报告
@@ -350,7 +350,7 @@
   - _Requirements: 性能需求_
   - _Prompt: Implement the task for spec full-sync, first run spec-workflow-guide to get the workflow guide then implement the task: Role: 性能测试主管，负责性能验证 | Task: 执行性能基准测试，运行 pytest tests/sync/test_full_sync_benchmark.py -v --benchmark-only，验证性能目标达标（同步速度 >500 条/秒，批量模式 >3 倍提升），分析性能报告，识别性能瓶颈，生成性能验证报告（保存到 docs/reports/full_sync_performance_report.md） | Restrictions: 使用真实数据库；测试环境隔离；性能数据准确 | Success: 所有性能指标达标，性能报告完整，无明显性能瓶颈_
 
-- [-] 10.3 完成规格文档
+- [x] 10.3 完成规格文档
   - 更新 tasks.md 标记所有任务完成
   - 生成实施总结报告
   - 提交最终审查
