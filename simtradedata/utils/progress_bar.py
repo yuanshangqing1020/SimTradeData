@@ -5,9 +5,11 @@
 """
 
 import logging
+import sys
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Any, Dict, Iterator, Optional
+
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,6 @@ class SyncProgressBar:
         self.current_phase = None
         self.phase_progress_bars = {}
         self.start_time = None
-        self._progress_line_active = False
 
         # 如果禁用日志，设置日志级别为WARNING
         if disable_logs:
@@ -88,7 +89,9 @@ class SyncProgressBar:
         except KeyboardInterrupt:
             # 检测到中断，快速清理并重新抛出
             interrupted = True
-            print(f"\r{' ' * 100}\r", end="", flush=True)  # 快速清除进度行
+            print(
+                f"\r{' ' * 100}\r", end="", flush=True, file=sys.stderr
+            )  # 快速清除进度行
             raise  # 立即重新抛出，不做任何延迟操作
         finally:
             # 如果被中断，跳过所有清理操作
@@ -111,7 +114,6 @@ class SyncProgressBar:
 
     def log_phase_start(self, phase_name: str, desc: Optional[str] = None):
         """记录阶段开始"""
-        self._clear_progress_line()
         if not self.disable_logs:
             logger.info(f"🚀 {phase_name}: {desc or '开始'}")
 
@@ -119,114 +121,75 @@ class SyncProgressBar:
         self, phase_name: str, stats: Optional[Dict[str, Any]] = None
     ):
         """记录阶段完成"""
-        self._clear_progress_line()
         if stats:
             stats_str = ", ".join([f"{k}={v}" for k, v in stats.items()])
-            logger.info(f"✅ {phase_name}完成: {stats_str}")
+            message = f"✅ {phase_name}完成: {stats_str}"
         else:
-            logger.info(f"✅ {phase_name}完成")
+            message = f"✅ {phase_name}完成"
+
+        # 使用tqdm.write避免干扰进度条
+        from tqdm import tqdm
+
+        tqdm.write(message, file=sys.stderr)
+
+        if not self.disable_logs:
+            logger.info(message)
 
     def log_error(self, message: str):
         """记录错误（总是显示）"""
-        self._clear_progress_line()
         logger.error(f"❌ {message}")
 
     def log_warning(self, message: str):
         """记录警告（总是显示）"""
-        self._clear_progress_line()
         logger.warning(f"⚠️  {message}")
-
-    def _clear_progress_line(self):
-        """清除当前进度行"""
-        if self._progress_line_active:
-            print("\r" + " " * 100 + "\r", end="", flush=True)
-            self._progress_line_active = False
 
 
 class SimpleProgress:
-    """进度显示器"""
+    """进度显示器（基于tqdm）"""
 
     def __init__(self, total: int, desc: str = "Processing", phase_info: str = ""):
         self.total = total
         self.desc = desc
-        self.phase_info = phase_info  # 新增：阶段信息
-        self.current = 0
-        self._last_reported = -1
-        self.start_time = datetime.now()
-
-        # 引用全局进度条管理器（延迟引用）
+        self.phase_info = phase_info
         self.progress_manager = None
+
+        # 构建完整描述（包含阶段信息）
+        full_desc = f"{phase_info} {desc}" if phase_info else desc
+
+        # 创建tqdm进度条
+        self.pbar = tqdm(
+            total=total,
+            desc=full_desc,
+            ncols=None,  # 自动检测终端宽度
+            file=sys.stderr,
+            # 禁用平滑更新，减少刷新次数
+            smoothing=0.1,
+            # 使用ASCII字符以避免编码问题
+            ascii=False,
+            # 显示速率和预估时间
+            unit="it",
+            unit_scale=False,
+            # 确保进度条在同一行更新
+            dynamic_ncols=True,
+            # 关闭miniters以确保每次更新都刷新
+            miniters=1,
+            # 设置最小刷新间隔（避免过度刷新）
+            mininterval=0.5,
+        )
 
     def update(self, n: int = 1):
         """更新进度"""
-        self.current += n
-
-        # 延迟获取进度管理器引用
-        if self.progress_manager is None:
-            self.progress_manager = globals().get("sync_progress")
-
-        # 每10%或每5个项目报告一次进度
-        percentage = (self.current / self.total) * 100
-        report_threshold = int(percentage // 10) * 10
-
-        should_report = (
-            (report_threshold > self._last_reported and report_threshold % 10 == 0)
-            or (self.current % 5 == 0 and self.current <= 10)  # 前10个项目每5个报告一次
-            or (self.current % 50 == 0 and self.current > 10)  # 之后每50个报告一次
-            or (self.current == self.total)  # 总是报告完成
-        )
-
-        if should_report:
-            elapsed = datetime.now() - self.start_time
-            if self.current > 0 and elapsed.total_seconds() > 0:
-                rate = self.current / elapsed.total_seconds()
-                remaining_items = self.total - self.current
-                remaining_time = remaining_items / rate if rate > 0 else 0
-                if remaining_time < 60:
-                    remaining_str = f"{remaining_time:.0f}s"
-                elif remaining_time < 3600:
-                    remaining_str = f"{remaining_time/60:.1f}m"
-                else:
-                    remaining_str = f"{remaining_time/3600:.1f}h"
-            else:
-                remaining_str = "计算中"
-
-            # 创建简洁的进度条
-            bar_length = 30
-            filled_length = int(bar_length * percentage / 100)
-            bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-            # 构建进度信息（包含阶段信息）
-            phase_prefix = f"{self.phase_info} " if self.phase_info else ""
-            progress_line = f"{phase_prefix}{self.desc}: [{bar}] {percentage:5.1f}% ({self.current}/{self.total}) 剩余:{remaining_str}"
-
-            # 清除之前的进度行并输出新的进度
-            print(f"\r{progress_line:<120}", end="", flush=True)
-
-            # 标记进度行处于活跃状态
-            if self.progress_manager:
-                self.progress_manager._progress_line_active = True
-
-            self._last_reported = report_threshold
+        self.pbar.update(n)
 
     def set_description(self, desc: str):
         """设置描述"""
         self.desc = desc
+        full_desc = f"{self.phase_info} {desc}" if self.phase_info else desc
+        self.pbar.set_description(full_desc)
 
     def close(self):
         """关闭进度条"""
-        elapsed = datetime.now() - self.start_time
-        # 清除当前进度行
-        print(f"\r{' ' * 120}\r", end="", flush=True)
-        # 输出完成信息到新行（包含阶段信息）
-        phase_prefix = f"{self.phase_info} " if self.phase_info else ""
-        print(
-            f"✅ {phase_prefix}{self.desc}: 完成 {self.current}/{self.total} [耗时: {elapsed.total_seconds():.1f}s]"
-        )
-
-        # 重置进度行状态
-        if self.progress_manager:
-            self.progress_manager._progress_line_active = False
+        self.pbar.close()
 
 
 # 全局进度条管理器实例

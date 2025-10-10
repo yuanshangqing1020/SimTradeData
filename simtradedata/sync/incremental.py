@@ -193,6 +193,125 @@ class IncrementalSync:
                         f"缓存预加载失败: {cache_error}，将继续使用数据库查询"
                     )
 
+            # 🔙 历史回填阶段：检查并补充历史数据缺口
+            # 历史回填配置：复用智能补充的配置参数
+            enable_historical_backfill = self.config.get(
+                "sync.enable_historical_backfill", True
+            )
+            historical_backfill_sample_size = self.config.get(
+                "sync.historical_backfill_sample_size", self.backfill_sample_size
+            )
+            historical_backfill_batch_size = self.config.get(
+                "sync.historical_backfill_batch_size", self.backfill_batch_size
+            )
+
+            historical_backfill_stats = {
+                "enabled": enable_historical_backfill,
+                "checked_symbols": 0,
+                "needs_backfill_symbols": 0,
+                "backfilled_symbols": 0,
+                "backfilled_records": 0,
+                "backfill_errors": 0,
+            }
+
+            if enable_historical_backfill:
+                logger.info("开始历史数据缺口检测...")
+
+                # 🎯 开始历史回填阶段监控
+                if self.enable_performance_monitor and self.performance_monitor:
+                    self.performance_monitor.start_phase("historical_backfill")
+
+                # 检查前几只股票来估算整体情况
+                sample_size = min(historical_backfill_sample_size, len(symbols))
+                sample_symbols = symbols[:sample_size]
+                needs_backfill_count = 0
+
+                for symbol in sample_symbols:
+                    historical_backfill_stats["checked_symbols"] += 1
+                    gap = self.detect_historical_gap(symbol, frequencies[0])
+                    if gap:
+                        needs_backfill_count += 1
+
+                # 如果样本中有需要回填的数据，则对所有股票进行历史回填
+                if needs_backfill_count > 0:
+                    backfill_ratio = needs_backfill_count / sample_size
+                    estimated_total = int(len(symbols) * backfill_ratio)
+                    logger.info(
+                        f"检测到历史数据缺口：样本中 {needs_backfill_count}/{sample_size} 只股票需要回填"
+                    )
+                    logger.info(
+                        f"预估全部 {len(symbols)} 只股票中约 {estimated_total} 只需要回填，开始历史回填..."
+                    )
+
+                    # 对所有股票进行历史回填（分批处理以避免内存问题）
+                    batch_size = historical_backfill_batch_size
+
+                    for i in range(0, len(symbols), batch_size):
+                        batch_symbols = symbols[i : i + batch_size]
+                        batch_num = i // batch_size + 1
+                        total_batches = (len(symbols) + batch_size - 1) // batch_size
+
+                        logger.info(
+                            f"历史回填批次 {batch_num}/{total_batches}: 处理 {len(batch_symbols)} 只股票"
+                        )
+
+                        for symbol in batch_symbols:
+                            try:
+                                historical_backfill_stats["checked_symbols"] += 1
+
+                                # 检查是否有历史缺口
+                                gap = self.detect_historical_gap(symbol, frequencies[0])
+
+                                if gap:
+                                    historical_backfill_stats[
+                                        "needs_backfill_symbols"
+                                    ] += 1
+                                    gap_start, gap_end = gap
+
+                                    # 执行历史回填
+                                    backfill_result = self.sync_symbol_range(
+                                        symbol, gap_start, gap_end, frequencies[0]
+                                    )
+
+                                    if backfill_result.get("success_count", 0) > 0:
+                                        historical_backfill_stats[
+                                            "backfilled_symbols"
+                                        ] += 1
+                                        historical_backfill_stats[
+                                            "backfilled_records"
+                                        ] += backfill_result.get("success_count", 0)
+                                        logger.info(
+                                            f"历史回填成功: {symbol} {gap_start} 到 {gap_end}, "
+                                            f"回填 {backfill_result.get('success_count', 0)} 条记录"
+                                        )
+                                    else:
+                                        historical_backfill_stats[
+                                            "backfill_errors"
+                                        ] += 1
+                                        logger.warning(
+                                            f"历史回填失败: {symbol} {gap_start} 到 {gap_end}"
+                                        )
+
+                            except Exception as e:
+                                logger.warning(f"历史回填股票 {symbol} 时出错: {e}")
+                                historical_backfill_stats["backfill_errors"] += 1
+
+                    logger.info(
+                        f"历史回填完成: 检查了 {historical_backfill_stats['checked_symbols']} 只股票，"
+                        f"回填了 {historical_backfill_stats['backfilled_symbols']} 只股票的 "
+                        f"{historical_backfill_stats['backfilled_records']} 条历史记录"
+                    )
+
+                    # 🎯 结束历史回填阶段监控
+                    if self.enable_performance_monitor and self.performance_monitor:
+                        self.performance_monitor.end_phase(
+                            "historical_backfill",
+                            historical_backfill_stats["backfilled_records"],
+                        )
+
+                else:
+                    logger.info("样本检查显示历史数据完整，跳过历史回填阶段")
+
             # 🚀 智能补充阶段：检查并补充历史数据的衍生字段
             backfill_stats = {
                 "enabled": self.enable_smart_backfill,
@@ -312,6 +431,9 @@ class IncrementalSync:
             # 更新同步状态
             self._update_sync_status(target_date, self.sync_stats)
 
+            # 将历史回填统计信息添加到结果中
+            self.sync_stats["historical_backfill"] = historical_backfill_stats
+
             # 将智能补充统计信息添加到结果中
             self.sync_stats["smart_backfill"] = backfill_stats
 
@@ -332,6 +454,12 @@ class IncrementalSync:
                 f"跳过={self.sync_stats['skipped_count']}, "
                 f"整体状态={result_status}"
             )
+
+            if historical_backfill_stats["backfilled_symbols"] > 0:
+                logger.info(
+                    f"历史回填完成: 回填了 {historical_backfill_stats['backfilled_symbols']} 只股票的 "
+                    f"{historical_backfill_stats['backfilled_records']} 条历史记录"
+                )
 
             if backfill_stats["backfilled_symbols"] > 0:
                 logger.info(
@@ -900,8 +1028,111 @@ class IncrementalSync:
             logger.error(f"获取最后数据日期失败 {symbol}: {e}")
             return None
 
+    def get_earliest_data_date(
+        self, symbol: str, frequency: str = "1d"
+    ) -> Optional[date]:
+        """
+        获取股票的最早数据日期
+
+        Args:
+            symbol: 股票代码
+            frequency: 频率
+
+        Returns:
+            Optional[date]: 最早数据日期，如果没有数据则返回None
+        """
+        try:
+            sql = """
+            SELECT MIN(date) as earliest_date
+            FROM market_data
+            WHERE symbol = ? AND frequency = ?
+            """
+
+            result = self.db_manager.fetchone(sql, (symbol, frequency))
+
+            if result and result["earliest_date"]:
+                earliest_date = datetime.strptime(
+                    result["earliest_date"], "%Y-%m-%d"
+                ).date()
+                return earliest_date
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"获取最早数据日期失败 {symbol}: {e}")
+            return None
+
+    def detect_historical_gap(
+        self, symbol: str, frequency: str = "1d"
+    ) -> Optional[Tuple[date, date]]:
+        """
+        检测历史数据缺口
+
+        检查数据库中最早的数据日期是否晚于配置的默认起始日期，
+        如果是，则返回需要回填的日期范围。
+
+        Args:
+            symbol: 股票代码
+            frequency: 频率
+
+        Returns:
+            Optional[Tuple[date, date]]: 如果有历史缺口，返回(default_start, 最早交易日前一日)；
+                                         否则返回None
+        """
+        try:
+            # 获取配置的默认起始日期
+            default_start_str = self.config.get("sync.default_start_date", "2020-01-01")
+            default_start = datetime.strptime(default_start_str, "%Y-%m-%d").date()
+
+            # 获取数据库中最早的数据日期
+            earliest_date = self.get_earliest_data_date(symbol, frequency)
+
+            if earliest_date is None:
+                # 没有数据，不是历史缺口问题
+                return None
+
+            # 检查最早日期是否晚于默认起始日期
+            if earliest_date > default_start:
+                # 查找配置起始日期之后、最早数据日期之前的交易日
+                sql = """
+                SELECT date FROM trading_calendar
+                WHERE date >= ? AND date < ? AND market = 'CN' AND is_trading = 1
+                ORDER BY date DESC
+                LIMIT 1
+                """
+                result = self.db_manager.fetchone(
+                    sql, (str(default_start), str(earliest_date))
+                )
+
+                if result:
+                    # 找到了交易日，这是真实的历史缺口
+                    gap_end = datetime.strptime(result["date"], "%Y-%m-%d").date()
+                    logger.debug(
+                        f"检测到历史缺口 {symbol}: {default_start} 到 {gap_end} "
+                        f"(当前最早数据: {earliest_date})"
+                    )
+                    return (default_start, gap_end)
+                else:
+                    # 没有找到交易日，说明 default_start 到 earliest_date 之间没有交易日
+                    # 这不是真正的缺口，数据已经从第一个交易日开始了
+                    logger.debug(
+                        f"配置起始日期 {default_start} 到最早数据日期 {earliest_date} 之间没有交易日，无需回填"
+                    )
+                    return None
+            else:
+                # 没有历史缺口
+                return None
+
+        except Exception as e:
+            logger.error(f"检测历史缺口失败 {symbol}: {e}")
+            return None
+
     def calculate_sync_range(
-        self, symbol: str, target_date: date, frequency: str = "1d"
+        self,
+        symbol: str,
+        target_date: date,
+        frequency: str = "1d",
+        check_historical_gap: bool = False,
     ) -> Tuple[Optional[date], date]:
         """
         计算增量同步的日期范围
@@ -910,6 +1141,7 @@ class IncrementalSync:
             symbol: 股票代码
             target_date: 目标日期
             frequency: 频率
+            check_historical_gap: 是否检查并优先处理历史缺口（默认False，保持向后兼容）
 
         Returns:
             Tuple[Optional[date], date]: (开始日期, 结束日期)
@@ -931,6 +1163,17 @@ class IncrementalSync:
                 logger.info(f"首次同步 {symbol}: {start_date} 到 {target_date}")
                 return start_date, target_date
             else:
+                # 🆕 新增：检查历史缺口（仅在显式开启时）
+                if check_historical_gap:
+                    historical_gap = self.detect_historical_gap(symbol, frequency)
+                    if historical_gap:
+                        gap_start, gap_end = historical_gap
+                        logger.info(
+                            f"历史回填 {symbol}: {gap_start} 到 {gap_end} "
+                            f"(当前最早数据: {self.get_earliest_data_date(symbol, frequency)})"
+                        )
+                        return gap_start, gap_end
+
                 # 有历史数据，从最后日期的下一天开始
                 start_date = last_date + timedelta(days=1)
 

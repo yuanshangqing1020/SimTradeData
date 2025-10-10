@@ -150,31 +150,18 @@ class SimTradeDataCLI:
 
             # 如果没有指定股票，获取所有活跃股票
             if not symbols:
-                try:
-                    stock_info = self.data_source_manager.get_stock_info()
-                    if isinstance(stock_info, list):
-                        symbols = [
-                            stock["symbol"] for stock in stock_info[:10]
-                        ]  # 限制数量用于演示
-                    else:
-                        # 如果返回的不是列表，使用默认的测试股票
-                        symbols = [
-                            "000001.SZ",
-                            "000002.SZ",
-                            "600000.SS",
-                            "600036.SS",
-                            "000858.SZ",
-                        ]
-                    logger.info(f"   使用前{len(symbols)}只股票进行演示")
-                except Exception as e:
-                    logger.warning(f"获取股票列表失败: {e}，使用默认股票列表")
-                    symbols = [
-                        "000001.SZ",
-                        "000002.SZ",
-                        "600000.SS",
-                        "600036.SS",
-                        "000858.SZ",
-                    ]
+                # 从数据库获取活跃股票列表
+                sql = (
+                    "SELECT symbol FROM stocks WHERE status = 'active' ORDER BY symbol"
+                )
+                result = self.db_manager.fetchall(sql)
+                if result:
+                    symbols = [row["symbol"] for row in result]
+                    logger.info(f"   从数据库获取 {len(symbols)} 只活跃股票")
+                else:
+                    raise ValueError(
+                        "数据库中没有活跃股票，请先运行 full-sync 更新股票列表"
+                    )
 
             # 执行增量同步
             total_success = 0

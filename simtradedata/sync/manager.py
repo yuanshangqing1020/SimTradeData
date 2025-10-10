@@ -293,132 +293,25 @@ class SyncManager(BaseManager):
                         self._get_extended_data_symbols_to_process(symbols, target_date)
                     )
 
-                    # 如果所有扩展数据都已完成，直接跳过所有阶段
+                    # 如果所有扩展数据都已完成,只跳过扩展数据同步阶段,其他阶段正常执行
+                    # 这样可以确保历史回填等功能正常运行
                     if len(extended_symbols_to_process) == 0:
-                        self.logger.info("🎉 检测到所有数据已完成，跳过整个同步流程")
-                        full_result["phases"]["all_completed"] = {
-                            "status": "completed",
-                            "message": "所有数据已完成",
-                        }
-                        full_result["summary"][
-                            "total_phases"
-                        ] = 4  # 基础数据更新、增量同步、扩展数据、缺口检测
-                        full_result["summary"][
-                            "successful_phases"
-                        ] = 4  # 假设4个阶段都完成
-                        return full_result
+                        self.logger.info(
+                            "🎉 检测到扩展数据已完成，将跳过阶段2扩展数据同步"
+                        )
 
-                    # 计算完成进度
-                    total_stocks = len(symbols)
-                    remaining_stocks = len(extended_symbols_to_process)
-                    completion_rate = (
-                        (total_stocks - remaining_stocks) / total_stocks
-                        if total_stocks > 0
-                        else 0
-                    )
-
-                    self.logger.info(
-                        f"📊 断点续传状态: 总计{total_stocks}只，已完成{completion_rate:.1%}，剩余{remaining_stocks}只"
-                    )
-
-                    # 直接跳到扩展数据同步阶段
-                    self.logger.info(
-                        "⏭️ 跳过基础数据更新和增量同步，直接进入扩展数据同步"
-                    )
-                    full_result["phases"]["calendar_update"] = {
-                        "status": "skipped",
-                        "message": "断点续传跳过",
-                    }
-                    full_result["phases"]["stock_list_update"] = {
-                        "status": "skipped",
-                        "message": "断点续传跳过",
-                    }
-                    full_result["phases"]["incremental_sync"] = {
-                        "status": "skipped",
-                        "message": "断点续传跳过",
-                    }
-                    full_result["summary"][
-                        "successful_phases"
-                    ] += 3  # 标记跳过的阶段为成功
-                    full_result["summary"]["total_phases"] += 3  # 增加总阶段数
-
-                    self.logger.debug(
-                        f"断点续传: 跳过3个阶段后，successful_phases={full_result['summary']['successful_phases']}, total_phases={full_result['summary']['total_phases']}"
-                    )
-
-                    # 阶段2: 同步扩展数据（断点续传）
-                    log_phase_start("阶段2", "扩展数据同步（断点续传）")
-                    phase2_resume_start = datetime.now()
-
-                    with create_phase_progress(
-                        "phase2",
-                        len(extended_symbols_to_process),
-                        "扩展数据同步",
-                        "股票",
-                        phase_info="[断点续传]",
-                    ) as pbar:
-                        try:
-                            extended_result = self._sync_extended_data(
-                                extended_symbols_to_process, target_date, pbar
-                            )
-                            full_result["phases"]["extended_data_sync"] = {
-                                "status": "completed",
-                                "result": extended_result,
-                            }
-                            full_result["summary"]["successful_phases"] += 1
-                            full_result["summary"]["total_phases"] += 1
-
-                            self.logger.debug(
-                                f"断点续传: 扩展数据同步完成后，successful_phases={full_result['summary']['successful_phases']}, total_phases={full_result['summary']['total_phases']}"
-                            )
-
-                            log_phase_complete(
-                                "扩展数据同步",
-                                {
-                                    "财务数据": f"{extended_result.get('financials_count', 0)}条",
-                                    "估值数据": f"{extended_result.get('valuations_count', 0)}条",
-                                    "处理股票": f"{extended_result.get('processed_symbols', 0)}只",
-                                },
-                            )
-
-                            # 记录阶段2性能（断点续传）
-                            phase2_resume_duration = (
-                                datetime.now() - phase2_resume_start
-                            ).total_seconds()
-                            self._log_performance(
-                                "扩展数据同步（断点续传）",
-                                phase2_resume_duration,
-                                stocks=len(extended_symbols_to_process),
-                            )
-                            if "extended_data_sync" in full_result["phases"]:
-                                if isinstance(
-                                    full_result["phases"]["extended_data_sync"], dict
-                                ):
-                                    full_result["phases"]["extended_data_sync"][
-                                        "duration_seconds"
-                                    ] = phase2_resume_duration
-
-                            # 完成时间
-                            end_time = datetime.now()
-                            full_result["end_time"] = end_time.isoformat()
-                            full_result["duration_seconds"] = (
-                                end_time - start_time
-                            ).total_seconds()
-
-                            self.logger.debug(
-                                f"断点续传: 准备返回，final successful_phases={full_result['summary']['successful_phases']}, total_phases={full_result['summary']['total_phases']}"
-                            )
-
-                            return full_result
-
-                        except Exception as e:
-                            log_error(f"扩展数据同步失败: {e}")
-                            full_result["phases"]["extended_data_sync"] = {
-                                "status": "failed",
-                                "error": str(e),
-                            }
-                            full_result["summary"]["failed_phases"] += 1
-                            return full_result
+                    # 如果有未完成的扩展数据,记录断点续传状态
+                    if len(extended_symbols_to_process) > 0:
+                        total_stocks = len(symbols)
+                        remaining_stocks = len(extended_symbols_to_process)
+                        completion_rate = (
+                            (total_stocks - remaining_stocks) / total_stocks
+                            if total_stocks > 0
+                            else 0
+                        )
+                        self.logger.info(
+                            f"📊 断点续传: 扩展数据已完成{completion_rate:.1%}，剩余{remaining_stocks}只需处理"
+                        )
                 else:
                     self.logger.info("🆕 未检测到扩展数据记录，执行完整同步流程")
 
@@ -444,20 +337,8 @@ class SyncManager(BaseManager):
 
                     if "error" not in calendar_result:
                         full_result["summary"]["successful_phases"] += 1
-                        updated_records = calendar_result.get("updated_records", 0)
-                        total_records = calendar_result.get("total_records", 0)
-                        years_range = f"{calendar_result.get('start_year')}-{calendar_result.get('end_year')}"
-                        log_phase_complete(
-                            "交易日历更新",
-                            {
-                                "年份范围": years_range,
-                                "新增记录": f"{updated_records}条",
-                                "总记录": f"{total_records}条",
-                            },
-                        )
                     else:
                         full_result["summary"]["failed_phases"] += 1
-                        log_error(f"交易日历更新失败: {calendar_result['error']}")
 
                     # 更新股票列表
                     update_phase_description("更新股票列表（可能需要较长时间）")
@@ -470,22 +351,8 @@ class SyncManager(BaseManager):
 
                     if "error" not in stock_list_result:
                         full_result["summary"]["successful_phases"] += 1
-                        total_stocks = stock_list_result.get("total_stocks", 0)
-                        new_stocks = stock_list_result.get("new_stocks", 0)
-                        updated_stocks = stock_list_result.get("updated_stocks", 0)
-                        log_phase_complete(
-                            "股票列表更新",
-                            {
-                                "总股票": f"{total_stocks}只",
-                                "新增": f"{new_stocks}只",
-                                "更新": f"{updated_stocks}只",
-                            },
-                        )
                     else:
                         full_result["summary"]["failed_phases"] += 1
-                        error_msg = stock_list_result.get("error", "未知错误")
-                        log_error(f"股票列表更新失败: {error_msg}")
-
                         # 股票列表更新失败时,尝试使用数据库中的现有股票
                         self.logger.info(
                             "⚠️  股票列表更新失败,尝试使用数据库中的现有股票"
@@ -493,10 +360,41 @@ class SyncManager(BaseManager):
                         symbols = self._get_active_stocks_from_db()
 
                 except Exception as e:
-                    log_error(f"基础数据更新失败: {e}")
                     full_result["phases"]["base_data_update"] = {"error": str(e)}
                     full_result["summary"]["total_phases"] += 1
                     full_result["summary"]["failed_phases"] += 1
+
+            # 进度条已关闭，在这里输出完成日志
+            if "error" not in calendar_result:
+                updated_records = calendar_result.get("updated_records", 0)
+                total_records = calendar_result.get("total_records", 0)
+                years_range = f"{calendar_result.get('start_year')}-{calendar_result.get('end_year')}"
+                log_phase_complete(
+                    "交易日历更新",
+                    {
+                        "年份范围": years_range,
+                        "新增记录": f"{updated_records}条",
+                        "总记录": f"{total_records}条",
+                    },
+                )
+            else:
+                log_error(f"交易日历更新失败: {calendar_result['error']}")
+
+            if "error" not in stock_list_result:
+                total_stocks = stock_list_result.get("total_stocks", 0)
+                new_stocks = stock_list_result.get("new_stocks", 0)
+                updated_stocks = stock_list_result.get("updated_stocks", 0)
+                log_phase_complete(
+                    "股票列表更新",
+                    {
+                        "总股票": f"{total_stocks}只",
+                        "新增": f"{new_stocks}只",
+                        "更新": f"{updated_stocks}只",
+                    },
+                )
+            else:
+                error_msg = stock_list_result.get("error", "未知错误")
+                log_error(f"股票列表更新失败: {error_msg}")
 
             # 记录阶段0性能
             phase0_duration = (datetime.now() - phase0_start).total_seconds()
@@ -516,9 +414,9 @@ class SyncManager(BaseManager):
             if not symbols:
                 symbols = self._get_active_stocks_from_db()
                 if not symbols:
-                    # 如果数据库中没有股票，使用默认股票
-                    symbols = ["000001.SZ", "000002.SZ", "600000.SS", "600036.SS"]
-                    self.logger.info(f"使用默认股票列表: {len(symbols)}只股票")
+                    raise ValueError(
+                        "数据库中没有活跃股票，无法执行同步。请先确保股票列表更新成功"
+                    )
                 else:
                     self.logger.info(f"从数据库获取活跃股票: {len(symbols)}只股票")
 
@@ -1224,9 +1122,8 @@ class SyncManager(BaseManager):
                 baostock_source.connect()
 
             # 调用BaoStock的get_stock_info，支持target_date参数
-            # type: ignore - BaoStock适配器确实支持target_date参数,但Pylance无法推断具体类型
             stock_info = baostock_source.get_stock_info(
-                symbol=None, target_date=str(target_date)
+                symbol=None, target_date=str(target_date)  # type: ignore
             )
 
             # BaoStock直接返回列表，验证数据格式
@@ -2275,7 +2172,8 @@ class SyncManager(BaseManager):
                     processed_result = self.processing_engine.process_symbol_data(
                         symbol, str(gap_start), str(gap_end), frequency
                     )
-                    records_inserted = processed_result.get("records", 0)
+                    # 修复: 使用正确的字段名total_records
+                    records_inserted = processed_result.get("total_records", 0)
 
                     if records_inserted > 0:
                         fix_result["successful_fixes"] += 1
