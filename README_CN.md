@@ -17,7 +17,7 @@
 ### 1. 安装依赖
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone git@github.com:ykayz/SimTradeData.git
 cd SimTradeData
 
 # 安装依赖

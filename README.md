@@ -19,7 +19,7 @@
 ### 1. Install Dependencies
 ```bash
 # Clone the project
-git clone <repository-url>
+git clone git@github.com:ykayz/SimTradeData.git
 cd SimTradeData
 
 # Install dependencies
