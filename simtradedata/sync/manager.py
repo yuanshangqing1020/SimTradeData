@@ -1233,8 +1233,17 @@ class SyncManager(BaseManager):
                             )
                             continue
 
+                    normalized_market = (
+                        market.upper() if market else self._determine_market(symbol)
+                    )
+
                     processed_stocks.append(
-                        {"symbol": symbol, "name": name, "market": market}
+                        {
+                            "symbol": symbol,
+                            "name": name,
+                            "market": normalized_market,
+                            "status": stock_data.get("status", "active"),
+                        }
                     )
 
                 except Exception as e:
@@ -1252,113 +1261,29 @@ class SyncManager(BaseManager):
                     "failed_stocks": failed_stocks,
                 }
 
-            # 批量检查已存在的股票
-            symbol_list = [stock["symbol"] for stock in processed_stocks]
-            placeholders = ",".join(["?" for _ in symbol_list])
-            existing_symbols = set()
+            upsert_stats = self._bulk_upsert_stock_records(
+                processed_stocks, fetch_details=True
+            )
 
-            try:
-                existing_result = self.db_manager.fetchall(
-                    f"SELECT symbol FROM stocks WHERE symbol IN ({placeholders})",
-                    tuple(symbol_list),
-                )
-                existing_symbols = {row["symbol"] for row in existing_result}
-                self.logger.debug(
-                    f"database in already exists {len(existing_symbols)} stocks"
-                )
-            except Exception as e:
-                self.logger.warning(f"batch query already exists stock failed : {e}")
-                # 回退到逐一处理
-                existing_symbols = set()
+            new_stocks = upsert_stats["new"]
+            updated_stocks = upsert_stats["updated"]
+            failed_stocks = upsert_stats["failed"]
 
-            # 分离新股票和需要更新的股票
-            new_stock_batch = []
-            update_stock_batch = []
+            international_result = self._sync_international_stock_list()
+            if not international_result:
+                international_result = {
+                    "status": "skipped",
+                    "message": "未执行国际市场股票更新",
+                    "new_stocks": 0,
+                    "updated_stocks": 0,
+                    "failed_stocks": 0,
+                    "markets": {},
+                }
 
-            for stock in processed_stocks:
-                if stock["symbol"] in existing_symbols:
-                    update_stock_batch.append((stock["name"], stock["symbol"]))
-                else:
-                    new_stock_batch.append(
-                        (
-                            stock["symbol"],
-                            stock["name"],
-                            stock["market"],
-                            stock["market"],  # exchange 字段
-                            "active",
-                        )
-                    )
-
-            # 批量更新已存在的股票
-            if update_stock_batch:
-                try:
-                    self.db_manager.executemany(
-                        "UPDATE stocks SET name = ?, updated_at = datetime('now') WHERE symbol = ?",
-                        update_stock_batch,
-                    )
-                    updated_stocks = len(update_stock_batch)
-                    self.logger.debug(f"batch update {updated_stocks} stocks")
-                except Exception as e:
-                    self.logger.warning(f"batch update stock failed : {e}")
-                    # 逐一更新
-                    for name, symbol in update_stock_batch:
-                        try:
-                            self.db_manager.execute(
-                                "UPDATE stocks SET name = ?, updated_at = datetime('now') WHERE symbol = ?",
-                                (name, symbol),
-                            )
-                            updated_stocks += 1
-                        except Exception as e2:
-                            self.logger.warning(
-                                f"update new stock {symbol} failed : {e2}"
-                            )
-                            failed_stocks += 1
-
-            # 批量插入新股票
-            if new_stock_batch:
-                try:
-                    self.db_manager.executemany(
-                        """
-                        INSERT INTO stocks (symbol, name, market, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-                        """,
-                        [(row[0], row[1], row[2], row[4]) for row in new_stock_batch],
-                    )
-                    new_stocks = len(new_stock_batch)
-                    self.logger.debug(f"batch insert {new_stocks} new stock")
-
-                    # 为所有新股票获取详细信息
-                    for symbol, _, _, _, _ in new_stock_batch:
-                        try:
-                            self._fetch_detailed_stock_info(symbol)
-                        except Exception as e:
-                            self.logger.debug(
-                                f"retrieving {symbol} detailed info failed : {e}"
-                            )
-
-                except Exception as e:
-                    self.logger.warning(f"batch insert new stock failed : {e}")
-                    # 回退到逐一插入
-                    for stock_data in new_stock_batch:
-                        try:
-                            self.db_manager.execute(
-                                """
-                                INSERT INTO stocks (symbol, name, market, status, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-                                """,
-                                (
-                                    stock_data[0],
-                                    stock_data[1],
-                                    stock_data[2],
-                                    stock_data[4],
-                                ),
-                            )
-                            new_stocks += 1
-                        except Exception as e2:
-                            self.logger.warning(
-                                f"insert stock {stock_data[0]} failed : {e2}"
-                            )
-                            failed_stocks += 1
+            if international_result.get("status") in {"completed", "partial"}:
+                new_stocks += international_result.get("new_stocks", 0)
+                updated_stocks += international_result.get("updated_stocks", 0)
+                failed_stocks += international_result.get("failed_stocks", 0)
 
             total_processed = new_stocks + updated_stocks
 
@@ -1372,6 +1297,7 @@ class SyncManager(BaseManager):
                 "new_stocks": new_stocks,
                 "updated_stocks": updated_stocks,
                 "failed_stocks": failed_stocks,
+                "international": international_result,
             }
 
         except Exception as e:
@@ -1382,6 +1308,221 @@ class SyncManager(BaseManager):
                 "total_stocks": 0,
                 "new_stocks": 0,
                 "updated_stocks": 0,
+            }
+
+    def _bulk_upsert_stock_records(
+        self, stocks: List[Dict[str, Any]], fetch_details: bool = True
+    ) -> Dict[str, int]:
+        """批量插入/更新股票记录"""
+        if not stocks:
+            return {"new": 0, "updated": 0, "failed": 0}
+
+        normalized: List[Dict[str, Any]] = []
+        for stock in stocks:
+            try:
+                symbol = stock.get("symbol")
+                name = stock.get("name")
+                if not symbol or not name:
+                    continue
+
+                market = stock.get("market")
+                if not market:
+                    market = self._determine_market(symbol)
+                market = market.upper()
+
+                status = stock.get("status", "active")
+
+                normalized.append(
+                    {
+                        "symbol": symbol,
+                        "name": name,
+                        "market": market,
+                        "status": status,
+                    }
+                )
+            except Exception as e:  # pragma: no cover - 防御性处理
+                self.logger.debug(f"normalize stock record failed: {stock} -> {e}")
+
+        if not normalized:
+            return {"new": 0, "updated": 0, "failed": 0}
+
+        symbols = [stock["symbol"] for stock in normalized]
+        placeholders = ",".join(["?"] * len(symbols))
+        existing_symbols: set[str] = set()
+
+        try:
+            existing_result = self.db_manager.fetchall(
+                f"SELECT symbol FROM stocks WHERE symbol IN ({placeholders})",
+                tuple(symbols),
+            )
+            existing_symbols = {row["symbol"] for row in existing_result}
+            self.logger.debug(
+                f"stock upsert existing symbols : {len(existing_symbols)}"
+            )
+        except Exception as e:
+            self.logger.warning(f"batch query existing stocks failed : {e}")
+
+        update_batch = []
+        new_records: List[Dict[str, Any]] = []
+        for stock in normalized:
+            if stock["symbol"] in existing_symbols:
+                update_batch.append((stock["name"], stock["symbol"]))
+            else:
+                new_records.append(stock)
+
+        new_count = 0
+        updated_count = 0
+        failed_count = 0
+
+        if update_batch:
+            try:
+                self.db_manager.executemany(
+                    "UPDATE stocks SET name = ?, updated_at = datetime('now') WHERE symbol = ?",
+                    update_batch,
+                )
+                updated_count = len(update_batch)
+            except Exception as e:
+                self.logger.warning(f"batch update stocks failed : {e}")
+                for name, symbol in update_batch:
+                    try:
+                        self.db_manager.execute(
+                            "UPDATE stocks SET name = ?, updated_at = datetime('now') WHERE symbol = ?",
+                            (name, symbol),
+                        )
+                        updated_count += 1
+                    except Exception as err:
+                        self.logger.warning(
+                            f"update stock {symbol} failed during fallback : {err}"
+                        )
+                        failed_count += 1
+
+        if new_records:
+            insert_rows = [
+                (record["symbol"], record["name"], record["market"], record["status"])
+                for record in new_records
+            ]
+            try:
+                self.db_manager.executemany(
+                    """
+                    INSERT INTO stocks (symbol, name, market, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                    """,
+                    insert_rows,
+                )
+                new_count = len(new_records)
+            except Exception as e:
+                self.logger.warning(f"batch insert stocks failed : {e}")
+                for record in new_records:
+                    try:
+                        self.db_manager.execute(
+                            """
+                            INSERT INTO stocks (symbol, name, market, status, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                            """,
+                            (
+                                record["symbol"],
+                                record["name"],
+                                record["market"],
+                                record["status"],
+                            ),
+                        )
+                        new_count += 1
+                    except Exception as err:
+                        self.logger.warning(
+                            f"insert stock {record['symbol']} failed during fallback : {err}"
+                        )
+                        failed_count += 1
+
+        if fetch_details and new_records:
+            for record in new_records:
+                try:
+                    self._fetch_detailed_stock_info(record["symbol"])
+                except Exception as e:
+                    self.logger.debug(
+                        f"retrieving {record['symbol']} detailed info failed : {e}"
+                    )
+
+        return {"new": new_count, "updated": updated_count, "failed": failed_count}
+
+    def _sync_international_stock_list(self) -> Dict[str, Any]:
+        """同步国际市场股票列表 (港股/美股)"""
+        try:
+            qstock_source = None
+            if hasattr(self.data_source_manager, "get_source"):
+                qstock_source = self.data_source_manager.get_source("qstock")
+
+            if not qstock_source:
+                self.logger.info("QStock数据源不可用，跳过国际市场股票列表更新")
+                return {
+                    "status": "skipped",
+                    "message": "QStock数据源不可用",
+                    "new_stocks": 0,
+                    "updated_stocks": 0,
+                    "failed_stocks": 0,
+                    "markets": {},
+                }
+
+            if not hasattr(qstock_source, "get_stock_list_by_market"):
+                self.logger.info("当前QStock版本不支持国际市场股票列表接口，跳过")
+                return {
+                    "status": "skipped",
+                    "message": "QStock版本不支持 get_stock_list_by_market",
+                    "new_stocks": 0,
+                    "updated_stocks": 0,
+                    "failed_stocks": 0,
+                    "markets": {},
+                }
+
+            summary = {
+                "status": "completed",
+                "new_stocks": 0,
+                "updated_stocks": 0,
+                "failed_stocks": 0,
+                "markets": {},
+            }
+
+            for market in ["HK", "US"]:
+                try:
+                    stock_list = qstock_source.get_stock_list_by_market(market)
+                    stats = self._bulk_upsert_stock_records(
+                        stock_list, fetch_details=False
+                    )
+
+                    summary["markets"][market] = {
+                        "status": "completed",
+                        "new_stocks": stats["new"],
+                        "updated_stocks": stats["updated"],
+                        "failed_stocks": stats["failed"],
+                    }
+
+                    summary["new_stocks"] += stats["new"]
+                    summary["updated_stocks"] += stats["updated"]
+                    summary["failed_stocks"] += stats["failed"]
+
+                except Exception as e:
+                    self.logger.warning(
+                        f"update {market} stock list failed : {e}", exc_info=False
+                    )
+                    summary["markets"][market] = {
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                    summary["status"] = "partial"
+
+            if not summary["markets"]:
+                summary["status"] = "skipped"
+
+            return summary
+
+        except Exception as e:
+            self.logger.error(f"international stock list update failed : {e}")
+            return {
+                "status": "failed",
+                "error": str(e),
+                "new_stocks": 0,
+                "updated_stocks": 0,
+                "failed_stocks": 0,
+                "markets": {},
             }
 
     def _determine_market(self, symbol: str) -> str:

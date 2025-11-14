@@ -7,7 +7,7 @@ QStock数据源适配器
 import logging
 import threading
 from datetime import date
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from .base import BaseDataSource, DataSourceDataError
 
@@ -199,6 +199,96 @@ class QStockAdapter(BaseDataSource):
                 return stock_list
 
         return self._retry_request(_fetch_data)
+
+    def get_stock_list_by_market(self, market: str) -> List[Dict[str, Any]]:
+        """获取指定市场的股票列表 (港股/美股)
+
+        Args:
+            market: 市场代码 (HK/US)
+
+        Returns:
+            List[Dict[str, Any]]: 股票列表，包含标准化 symbol/name/market
+        """
+        if not market:
+            raise ValueError("market 参数不能为空")
+
+        market = market.upper()
+        if market not in {"HK", "US"}:
+            raise ValueError(f"暂不支持的市场: {market}")
+
+        if not self.is_connected():
+            self.connect()
+
+        def _fetch_data():
+            qs_market_map = {"HK": "hk", "US": "us"}
+            qs_market = qs_market_map.get(market, market.lower())
+
+            # 不同版本 qstock 的 get_stock_list 签名可能不同，容错处理
+            fetch_fn = getattr(self._qstock, "get_stock_list", None)
+            if fetch_fn is None:
+                raise DataSourceDataError("当前 QStock 版本不支持 get_stock_list")
+
+            try:
+                data = fetch_fn(market=qs_market)
+            except TypeError:
+                # 兼容旧版本将 market 作为位置参数的情况
+                data = fetch_fn(qs_market)
+
+            if data is None:
+                raise DataSourceDataError(f"未获取到 {market} 股票列表数据")
+
+            return data
+
+        raw_data = self._retry_request(_fetch_data)
+
+        # 将结果统一转换为记录列表
+        records: List[Dict[str, Any]] = []
+        if hasattr(raw_data, "to_dict"):
+            try:
+                records = raw_data.to_dict("records")  # type: ignore[assignment]
+            except Exception as err:  # pragma: no cover - 防御旧版本行为
+                logger.warning(
+                    f"QStock 股票列表转换失败({market})，将尝试回退处理: {err}"
+                )
+        elif isinstance(raw_data, list):
+            records = []
+            for item in raw_data:
+                if isinstance(item, dict):
+                    records.append(item)
+        elif isinstance(raw_data, dict):
+            # 个别版本会返回 {'hk': df, 'us': df} 结构
+            candidate = raw_data.get(market.lower()) or raw_data.get(market.upper())
+            if hasattr(candidate, "to_dict"):
+                records = candidate.to_dict("records")  # type: ignore[assignment]
+
+        if not records:
+            raise DataSourceDataError(f"QStock 返回的 {market} 股票列表为空")
+
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+
+            raw_code = self._extract_code(item)
+            raw_name = self._extract_name(item)
+
+            if not raw_code or not raw_name:
+                continue
+
+            symbol = self._format_global_symbol(raw_code, market)
+            if not symbol:
+                continue
+
+            normalized[symbol] = {
+                "symbol": symbol,
+                "name": raw_name.strip(),
+                "market": market,
+            }
+
+        if not normalized:
+            raise DataSourceDataError(f"未能解析 {market} 股票列表字段")
+
+        return list(normalized.values())
 
     def get_fundamentals(
         self, symbol: str, report_date: Union[str, date], report_type: str = "Q4"
@@ -417,3 +507,71 @@ class QStockAdapter(BaseDataSource):
         if "." in symbol:
             return symbol.split(".")[0]
         return symbol
+
+    @staticmethod
+    def _extract_code(item: Dict[str, Any]) -> Optional[str]:
+        """从不同字段中提取股票代码"""
+        keys = [
+            "code",
+            "symbol",
+            "ticker",
+            "证券代码",
+            "股票代码",
+            "Code",
+        ]
+        for key in keys:
+            value = item.get(key)
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _extract_name(item: Dict[str, Any]) -> Optional[str]:
+        """从不同字段中提取股票名称"""
+        keys = [
+            "name",
+            "stock_name",
+            "证券简称",
+            "公司名称",
+            "Name",
+        ]
+        for key in keys:
+            value = item.get(key)
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _format_global_symbol(code: str, market: str) -> Optional[str]:
+        """根据市场格式化股票代码"""
+        if not code:
+            return None
+
+        clean_code = code.strip().upper()
+
+        if market == "HK":
+            # 去除可能的其他后缀
+            if clean_code.endswith(".HK"):
+                clean_code = clean_code[:-3]
+            if clean_code.endswith("HK"):
+                clean_code = clean_code[:-2]
+
+            clean_code = clean_code.replace(".", "")
+            if clean_code.isdigit():
+                clean_code = clean_code.zfill(5)
+
+            return f"{clean_code}.HK"
+
+        if market == "US":
+            clean_code = clean_code.replace(".US", "")
+            clean_code = clean_code.replace("-US", "")
+            clean_code = clean_code.replace(" US", "")
+            clean_code = clean_code.split(" ")[0]
+            clean_code = clean_code.replace(".", "-")  # 保留点分隔符的兼容
+
+            if not clean_code:
+                return None
+
+            return f"{clean_code}.US"
+
+        return None

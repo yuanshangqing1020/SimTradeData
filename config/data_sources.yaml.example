@@ -1,0 +1,52 @@
+# Data Sources Configuration
+#
+# This file defines the data source providers and their priorities.
+# Providers are loaded in priority order (lower number = higher priority).
+
+data_sources:
+  # Local data source using mootdx
+  - name: mootdx
+    module: simtradedata.data_sources.mootdx_provider.MootdxProvider
+    priority: 1
+    type: local
+    enabled: true
+    options:
+      base_path: /data/mootdx
+      cache_enabled: true
+      timeout: 10
+      retry_times: 3
+
+  # Online data source using qstock
+  - name: qstock
+    module: simtradedata.data_sources.qstock_provider.QstockProvider
+    priority: 2
+    type: online
+    enabled: true
+    options:
+      api_key_secret: secret_ref:qstock  # Reference to secret management
+      rate_limit: 200
+      timeout: 15
+      retry_times: 3
+
+  # Online data source using baostock
+  - name: baostock
+    module: simtradedata.data_sources.baostock_provider.BaostockProvider
+    priority: 3
+    type: online
+    enabled: true
+    options:
+      rate_limit: 150
+      timeout: 20
+      retry_times: 3
+      auto_login: true
+
+  # Example: Database-backed provider (disabled by default)
+  - name: custom_db
+    module: simtradedata.data_sources.database_provider.DatabaseProvider
+    priority: 10
+    type: database
+    enabled: false
+    options:
+      dsn: postgresql://user:password@localhost:5432/stockdata
+      pool_size: 5
+      timeout: 30

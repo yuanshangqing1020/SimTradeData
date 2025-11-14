@@ -177,7 +177,7 @@ class BaseTestClass:
             VALUES
                 ('baostock', 'baostock', 1, 1, 120, 0, 1, 1, '["SZ","SS"]', '["1d"]', 'active'),
                 ('mootdx', 'mootdx', 1, 2, 300, 1, 1, 1, '["SZ","SS"]', '["1d","5m","15m","30m","60m"]', 'active'),
-                ('qstock', 'qstock', 1, 3, 100, 0, 1, 0, '["SZ","SS"]', '["1d","5m","15m","30m","1h"]', 'active')
+                ('qstock', 'qstock', 1, 3, 100, 0, 1, 0, '["SZ","SS","HK","US"]', '["1d","5m","15m","30m","1h"]', 'active')
         """
         )
 

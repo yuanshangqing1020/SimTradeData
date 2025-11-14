@@ -220,10 +220,6 @@ def demo_rest_api_server():
     config.set("rest_api.enable_cors", True)
 
     # 模拟API路由器返回
-    api_router.query.return_value = [
-        {"symbol": "000001.SZ", "name": "平安银行", "market": "SZ"}
-    ]
-
     # 创建REST API服务器
     server = RESTAPIServer(db_manager, api_router, config)
 
@@ -244,14 +240,12 @@ def demo_rest_api_server():
     endpoints_desc = {
         "GET /api/v1/health": "健康检查",
         "GET /api/v1/stocks": "获取股票列表",
-        "GET /api/v1/stocks/{symbol}/price": "获取股票价格",
+        "GET /api/v1/stocks/{symbol}": "获取单个股票详情",
+        "GET /api/v1/stocks/{symbol}/history": "获取历史行情",
         "GET /api/v1/stocks/{symbol}/fundamentals": "获取基本面数据",
-        "GET /api/v1/stocks/{symbol}/industry": "获取行业分类",
-        "GET /api/v1/stocks/{symbol}/indicators": "获取技术指标",
-        "GET /api/v1/etf/{symbol}/holdings": "获取ETF成分股",
-        "GET /api/v1/sectors": "获取板块列表",
-        "GET /api/v1/sectors/{sector_code}/constituents": "获取板块成分股",
-        "GET /api/v1/market/stats": "获取市场统计",
+        "GET /api/v1/stocks/{symbol}/snapshot": "获取当日快照",
+        "GET /api/v1/snapshots": "批量获取快照",
+        "GET /api/v1/meta/stats": "查看API运行状态",
     }
 
     for endpoint, desc in endpoints_desc.items():
@@ -261,7 +255,7 @@ def demo_rest_api_server():
     print(f"    curl http://localhost:8888/api/v1/health")
     print(f"    curl http://localhost:8888/api/v1/stocks?market=SZ&limit=10")
     print(
-        f"    curl http://localhost:8888/api/v1/stocks/000001.SZ/price?start_date=2024-01-01"
+        f"    curl http://localhost:8888/api/v1/stocks/000001.SZ/history?start_date=2024-01-01"
     )
     print(f"    curl http://localhost:8888/api/v1/stocks/000001.SZ/fundamentals")
 

@@ -548,7 +548,7 @@ def _initialize_data_sources(conn):
             False,
             True,
             False,
-            '["SZ","SS"]',
+            '["SZ","SS","HK","US"]',
             '["1d","5m","15m","30m","60m"]',
         ),
     ]

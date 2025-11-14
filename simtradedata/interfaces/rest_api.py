@@ -1,29 +1,25 @@
 """
-RESTful API服务器
+RESTful API服务器 (FastAPI 版本)
 
-提供标准的RESTful API接口，支持HTTP/HTTPS访问。
+提供基于FastAPI的REST接口，统一路径语义并自动生成OpenAPI文档。
 """
 
 import logging
-from datetime import datetime
-from typing import Any, Dict
-
-try:
-    from flask import Flask, Response, jsonify, request
-    from flask_cors import CORS
-
-    FLASK_AVAILABLE = True
-except ImportError:
-    # 如果没有安装Flask，使用模拟版本
-    Flask = None
-    request = None
-    jsonify = None
-    Response = None
-    CORS = None
-    FLASK_AVAILABLE = False
 import threading
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ..api import APIRouter
+from ..api.middleware import (
+    AuthenticationMiddleware,
+    RateLimitMiddleware,
+    RequestLoggingMiddleware,
+)
 from ..config import Config
 from ..database import DatabaseManager
 
@@ -31,376 +27,385 @@ logger = logging.getLogger(__name__)
 
 
 class RESTAPIServer:
-    """RESTful API服务器"""
+    """基于 FastAPI 的 RESTful 服务封装"""
 
     def __init__(
-        self, db_manager: DatabaseManager, api_router: APIRouter, config: Config = None
-    ):
-        """
-        初始化RESTful API服务器
-
-        Args:
-            db_manager: 数据库管理器
-            api_router: API路由器
-            config: 配置对象
-        """
+        self,
+        db_manager: DatabaseManager,
+        api_router: APIRouter,
+        config: Config = None,
+    ) -> None:
         self.db_manager = db_manager
         self.api_router = api_router
         self.config = config or Config()
 
-        # 服务器配置
         self.host = self.config.get("rest_api.host", "0.0.0.0")
         self.port = self.config.get("rest_api.port", 8080)
         self.debug = self.config.get("rest_api.debug", False)
         self.enable_cors = self.config.get("rest_api.enable_cors", True)
+        self.docs_url = self.config.get("rest_api.docs_url", "/docs")
+        self.redoc_url = self.config.get("rest_api.redoc_url", "/redoc")
 
-        # 检查Flask是否可用
-        if not FLASK_AVAILABLE:
-            logger.warning("Flask not available , REST API server cannot start")
-            self.app = None
-        else:
-            # 创建Flask应用
-            self.app = Flask(__name__)
+        # Middleware configuration
+        self.enable_rate_limiting = self.config.get(
+            "api_gateway.enable_rate_limiting", True
+        )
+        self.rate_limit_requests = self.config.get(
+            "api_gateway.rate_limit_requests", 1000
+        )
+        self.rate_limit_window = self.config.get("api_gateway.rate_limit_window", 3600)
+        self.enable_authentication = self.config.get(
+            "api_gateway.enable_authentication", False
+        )
+        self.enable_logging = self.config.get("api_gateway.enable_logging", True)
+        self.api_keys = self.config.get("api_gateway.api_keys", {})
 
-            # 启用CORS
-            if self.enable_cors:
-                CORS(self.app)
-
-            # 注册路由
-            self._register_routes()
-
-        # 服务器状态
+        self.app = self._create_app()
+        self._server: Optional[uvicorn.Server] = None
+        self.server_thread: Optional[threading.Thread] = None
         self.is_running = False
-        self.server_thread = None
 
-        logger.info("RESTful API server initialized")
+        # Store middleware references for statistics
+        self.rate_limiter: Optional[RateLimitMiddleware] = None
+        self.authenticator: Optional[AuthenticationMiddleware] = None
+        self.request_logger: Optional[RequestLoggingMiddleware] = None
 
-    def _register_routes(self):
-        """注册API路由"""
-        if not FLASK_AVAILABLE or not self.app:
+        logger.info("FastAPI REST server initialized @ %s:%s", self.host, self.port)
+
+    def _create_app(self) -> FastAPI:
+        app = FastAPI(
+            title="SimTradeData REST API",
+            description="Unified REST interface for SimTradeData built on FastAPI",
+            version="1.0.0",
+            docs_url=self.docs_url,
+            redoc_url=self.redoc_url,
+        )
+
+        # Add middleware in reverse order (last added = first executed)
+
+        # 1. Request logging (outermost - logs all requests)
+        if self.enable_logging:
+            self.request_logger = RequestLoggingMiddleware(
+                app,
+                enabled=True,
+                log_request_body=False,
+                log_response_body=False,
+            )
+            app.add_middleware(
+                RequestLoggingMiddleware,
+                enabled=True,
+                log_request_body=False,
+                log_response_body=False,
+            )
+            logger.info("Request logging middleware enabled")
+
+        # 2. Rate limiting
+        if self.enable_rate_limiting:
+            self.rate_limiter = RateLimitMiddleware(
+                app,
+                enabled=True,
+                max_requests=self.rate_limit_requests,
+                window_seconds=self.rate_limit_window,
+            )
+            app.add_middleware(
+                RateLimitMiddleware,
+                enabled=True,
+                max_requests=self.rate_limit_requests,
+                window_seconds=self.rate_limit_window,
+            )
+            logger.info(
+                "Rate limiting middleware enabled: %d req/%ds",
+                self.rate_limit_requests,
+                self.rate_limit_window,
+            )
+
+        # 3. Authentication
+        if self.enable_authentication:
+            self.authenticator = AuthenticationMiddleware(
+                app,
+                enabled=True,
+                api_keys=self.api_keys,
+                public_paths=[
+                    "/docs",
+                    "/redoc",
+                    "/openapi.json",
+                    "/api/v1/health",
+                ],
+            )
+            app.add_middleware(
+                AuthenticationMiddleware,
+                enabled=True,
+                api_keys=self.api_keys,
+                public_paths=[
+                    "/docs",
+                    "/redoc",
+                    "/openapi.json",
+                    "/api/v1/health",
+                ],
+            )
+            logger.info(
+                "Authentication middleware enabled with %d API keys", len(self.api_keys)
+            )
+
+        # 4. CORS (innermost)
+        if self.enable_cors:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+            logger.info("CORS middleware enabled")
+
+        self._register_routes(app)
+        return app
+
+    # ------------------------------------------------------------------
+    # 路由注册
+    # ------------------------------------------------------------------
+    def _register_routes(self, app: FastAPI) -> None:
+        @app.get("/api/v1/health", tags=["system"])
+        def health() -> Dict[str, Any]:
+            return {
+                "status": "healthy",
+                "timestamp": datetime.now().isoformat(),
+                "version": "1.0.0",
+            }
+
+        @app.get("/api/v1/stocks", tags=["stocks"])
+        def list_stocks(
+            market: Optional[str] = Query(
+                default=None, description="市场过滤，例如 SZ/SS/HK/US"
+            ),
+            status: str = Query(default="active", description="股票状态"),
+            industry: Optional[str] = Query(default=None, description="行业过滤"),
+            fields: Optional[str] = Query(
+                default=None, description="以逗号分隔的字段列表"
+            ),
+            limit: Optional[int] = Query(
+                default=1000, ge=1, le=5000, description="返回条数"
+            ),
+            offset: int = Query(default=0, ge=0, description="偏移量"),
+            use_cache: bool = Query(default=True, description="是否使用缓存"),
+        ) -> Dict[str, Any]:
+            field_list = self._parse_csv(fields)
+            result = self.api_router.get_stock_info(
+                market=market,
+                industry=industry,
+                status=status,
+                fields=field_list,
+                format_type="dict",
+                limit=limit,
+                offset=offset,
+                use_cache=use_cache,
+            )
+            return self._ensure_success(result)
+
+        @app.get("/api/v1/stocks/{symbol}", tags=["stocks"])
+        def get_stock_detail(symbol: str) -> Dict[str, Any]:
+            result = self.api_router.get_stock_info(
+                symbols=symbol,
+                format_type="dict",
+                limit=1,
+                use_cache=True,
+            )
+            payload = self._ensure_success(result)
+            data = payload.get("data", [])
+            if not data:
+                raise HTTPException(status_code=404, detail="Symbol not found")
+            return data[0]
+
+        @app.get("/api/v1/stocks/{symbol}/history", tags=["history"])
+        def get_stock_history(
+            symbol: str,
+            start_date: Optional[str] = Query(
+                default=None, description="开始日期 YYYY-MM-DD"
+            ),
+            end_date: Optional[str] = Query(
+                default=None, description="结束日期 YYYY-MM-DD"
+            ),
+            frequency: str = Query(default="1d", description="频率 1d/5m/15m/30m/60m"),
+            fields: Optional[str] = Query(default=None, description="字段列表"),
+            limit: Optional[int] = Query(default=None, ge=1, le=10000),
+            offset: int = Query(default=0, ge=0),
+            use_cache: bool = Query(default=True),
+        ) -> Dict[str, Any]:
+            field_list = self._parse_csv(fields)
+            result = self.api_router.get_history(
+                symbols=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                frequency=frequency,
+                fields=field_list,
+                format_type="dict",
+                limit=limit,
+                offset=offset,
+                use_cache=use_cache,
+            )
+            return self._ensure_success(result)
+
+        @app.get("/api/v1/stocks/{symbol}/fundamentals", tags=["fundamentals"])
+        def get_stock_fundamentals(
+            symbol: str,
+            report_date: Optional[str] = Query(default=None, description="报告期"),
+            report_type: Optional[str] = Query(default=None, description="报告类型"),
+            fields: Optional[str] = Query(default=None, description="字段列表"),
+            limit: Optional[int] = Query(default=None, ge=1, le=5000),
+            offset: int = Query(default=0, ge=0),
+            use_cache: bool = Query(default=True),
+        ) -> Dict[str, Any]:
+            field_list = self._parse_csv(fields)
+            result = self.api_router.get_fundamentals(
+                symbols=symbol,
+                report_date=report_date,
+                report_type=report_type,
+                fields=field_list,
+                format_type="dict",
+                limit=limit,
+                offset=offset,
+                use_cache=use_cache,
+            )
+            return self._ensure_success(result)
+
+        @app.get("/api/v1/stocks/{symbol}/snapshot", tags=["snapshot"])
+        def get_stock_snapshot(
+            symbol: str,
+            trade_date: Optional[str] = Query(default=None, description="交易日期"),
+            market: Optional[str] = Query(default=None, description="市场过滤"),
+            fields: Optional[str] = Query(default=None, description="字段列表"),
+            use_cache: bool = Query(default=True),
+        ) -> Dict[str, Any]:
+            field_list = self._parse_csv(fields)
+            result = self.api_router.get_snapshot(
+                symbols=symbol,
+                trade_date=trade_date,
+                market=market,
+                fields=field_list,
+                format_type="dict",
+                use_cache=use_cache,
+            )
+            return self._ensure_success(result)
+
+        @app.get(
+            "/api/v1/snapshots",
+            tags=["snapshot"],
+            summary="获取多个股票快照",
+        )
+        def list_snapshots(
+            symbols: Optional[str] = Query(
+                default=None, description="逗号分隔的股票列表"
+            ),
+            trade_date: Optional[str] = Query(default=None),
+            market: Optional[str] = Query(default=None),
+            fields: Optional[str] = Query(default=None),
+            limit: Optional[int] = Query(default=None, ge=1, le=5000),
+            offset: int = Query(default=0, ge=0),
+            use_cache: bool = Query(default=True),
+        ) -> Dict[str, Any]:
+            symbol_list = self._parse_csv(symbols)
+            field_list = self._parse_csv(fields)
+            result = self.api_router.get_snapshot(
+                symbols=symbol_list,
+                trade_date=trade_date,
+                market=market,
+                fields=field_list,
+                format_type="dict",
+                limit=limit,
+                offset=offset,
+                use_cache=use_cache,
+            )
+            return self._ensure_success(result)
+
+        @app.get(
+            "/api/v1/meta/stats",
+            tags=["system"],
+            summary="获取 API 运行状态",
+        )
+        def get_api_stats() -> Dict[str, Any]:
+            return self.api_router.get_api_stats()
+
+        # 兼容性的旧路由，标记为 deprecated
+        @app.get(
+            "/api/v1/stocks/{symbol}/price",
+            tags=["deprecated"],
+            deprecated=True,
+        )
+        def legacy_price_endpoint(
+            symbol: str,
+            start_date: Optional[str] = Query(default=None),
+            end_date: Optional[str] = Query(default=None),
+            frequency: str = Query(default="1d"),
+        ) -> Dict[str, Any]:
+            return get_stock_history(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                frequency=frequency,
+            )
+
+        @app.exception_handler(Exception)
+        async def unhandled_exception_handler(request, exc):  # type: ignore
+            logger.exception("Unhandled exception in REST API", exc_info=exc)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": "Internal server error",
+                    "detail": str(exc),
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # 管理方法
+    # ------------------------------------------------------------------
+    def start(self, threaded: bool = True) -> None:
+        if self.is_running:
+            logger.warning("REST API server already running")
             return
 
-        @self.app.route("/api/v1/health", methods=["GET"])
-        def health_check():
-            """健康检查"""
-            return jsonify(
-                {
-                    "status": "healthy",
-                    "timestamp": datetime.now().isoformat(),
-                    "version": "1.0.0",
-                }
-            )
+        config = uvicorn.Config(
+            self.app,
+            host=self.host,
+            port=self.port,
+            log_level="debug" if self.debug else "info",
+        )
+        self._server = uvicorn.Server(config)
 
-        @self.app.route("/api/v1/stocks", methods=["GET"])
-        def get_stocks():
-            """获取股票列表"""
-            try:
-                market = request.args.get("market")
-                status = request.args.get("status", "active")
-                limit = int(request.args.get("limit", 1000))
-
-                query_params = {"data_type": "stock_list", "format": "json"}
-
-                if market:
-                    query_params["market"] = market
-                if status:
-                    query_params["status"] = status
-
-                result = self.api_router.query(query_params)
-
-                # 限制返回数量
-                if isinstance(result, list) and len(result) > limit:
-                    result = result[:limit]
-
-                return jsonify(
-                    {
-                        "success": True,
-                        "data": result,
-                        "count": len(result) if isinstance(result, list) else 0,
-                    }
-                )
-
-            except Exception as e:
-                logger.error(f"retrieving stock list failed : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/stocks/<symbol>/price", methods=["GET"])
-        def get_stock_price(symbol):
-            """获取股票价格"""
-            try:
-                start_date = request.args.get("start_date")
-                end_date = request.args.get("end_date")
-                frequency = request.args.get("frequency", "1d")
-
-                query_params = {
-                    "data_type": "price_data",
-                    "symbols": [symbol],
-                    "frequency": frequency,
-                    "format": "json",
-                }
-
-                if start_date:
-                    query_params["start_date"] = start_date
-                if end_date:
-                    query_params["end_date"] = end_date
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "symbol": symbol, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve stock price : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/stocks/<symbol>/fundamentals", methods=["GET"])
-        def get_stock_fundamentals(symbol):
-            """获取股票基本面"""
-            try:
-                fields = request.args.get("fields")
-                if fields:
-                    fields = fields.split(",")
-
-                query_params = {
-                    "data_type": "fundamentals",
-                    "symbols": [symbol],
-                    "format": "json",
-                }
-
-                if fields:
-                    query_params["fields"] = fields
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "symbol": symbol, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve fundamental data : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/stocks/<symbol>/industry", methods=["GET"])
-        def get_stock_industry(symbol):
-            """获取股票行业分类"""
-            try:
-                standard = request.args.get("standard", "sw")
-
-                query_params = {
-                    "data_type": "industry_classification",
-                    "symbols": [symbol],
-                    "standard": standard,
-                    "format": "json",
-                }
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "symbol": symbol, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve industry classification : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/stocks/<symbol>/indicators", methods=["GET"])
-        def get_stock_indicators(symbol):
-            """获取股票技术指标"""
-            try:
-                indicators = request.args.get("indicators", "ma,rsi")
-                start_date = request.args.get("start_date")
-                end_date = request.args.get("end_date")
-
-                if indicators:
-                    indicators = indicators.split(",")
-
-                query_params = {
-                    "data_type": "technical_indicators",
-                    "symbol": symbol,
-                    "indicators": indicators,
-                    "format": "json",
-                }
-
-                if start_date:
-                    query_params["start_date"] = start_date
-                if end_date:
-                    query_params["end_date"] = end_date
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "symbol": symbol, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve technical indicators : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/etf/<symbol>/holdings", methods=["GET"])
-        def get_etf_holdings(symbol):
-            """获取ETF成分股"""
-            try:
-                date = request.args.get("date")
-
-                query_params = {
-                    "data_type": "etf_holdings",
-                    "etf_symbol": symbol,
-                    "format": "json",
-                }
-
-                if date:
-                    query_params["date"] = date
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "etf_symbol": symbol, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve ETF constituent stocks : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/sectors", methods=["GET"])
-        def get_sectors():
-            """获取板块列表"""
-            try:
-                sector_type = request.args.get("type", "industry")
-
-                query_params = {
-                    "data_type": "sector_list",
-                    "sector_type": sector_type,
-                    "format": "json",
-                }
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "data": result})
-
-            except Exception as e:
-                logger.error(f"failed to retrieve sector list : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/sectors/<sector_code>/constituents", methods=["GET"])
-        def get_sector_constituents(sector_code):
-            """获取板块成分股"""
-            try:
-                date = request.args.get("date")
-
-                query_params = {
-                    "data_type": "sector_constituents",
-                    "sector_code": sector_code,
-                    "format": "json",
-                }
-
-                if date:
-                    query_params["date"] = date
-
-                result = self.api_router.query(query_params)
-
-                return jsonify(
-                    {"success": True, "sector_code": sector_code, "data": result}
-                )
-
-            except Exception as e:
-                logger.error(f"failed to retrieve sector constituent stocks : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.route("/api/v1/market/stats", methods=["GET"])
-        def get_market_stats():
-            """获取市场统计"""
-            try:
-                market = request.args.get("market")
-                days = int(request.args.get("days", 30))
-
-                query_params = {
-                    "data_type": "market_statistics",
-                    "days": days,
-                    "format": "json",
-                }
-
-                if market:
-                    query_params["market"] = market
-
-                result = self.api_router.query(query_params)
-
-                return jsonify({"success": True, "data": result})
-
-            except Exception as e:
-                logger.error(f"retrieving market statistics failed : {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
-
-        @self.app.errorhandler(404)
-        def not_found(error):
-            """404错误处理"""
-            return jsonify({"success": False, "error": "API endpoint not found"}), 404
-
-        @self.app.errorhandler(500)
-        def internal_error(error):
-            """500错误处理"""
-            return jsonify({"success": False, "error": "Internal server error"}), 500
-
-    def start(self, threaded: bool = True):
-        """启动服务器"""
-        try:
-            if not FLASK_AVAILABLE or not self.app:
-                logger.error("Flask not available , unable to start REST API server")
-                return
-
-            if self.is_running:
-                logger.warning("server already running")
-                return
-
-            if threaded:
-                # 在新线程中启动服务器
-                self.server_thread = threading.Thread(
-                    target=self._run_server, daemon=True
-                )
-                self.server_thread.start()
-            else:
-                # 在当前线程中启动服务器
-                self._run_server()
-
+        if threaded:
+            self.server_thread = threading.Thread(target=self._server.run, daemon=True)
+            self.server_thread.start()
+            self.is_running = True
+            logger.info("REST API server started: http://%s:%s", self.host, self.port)
+        else:
             self.is_running = True
             logger.info(
-                f"RESTful API server started successfully : http://{self.host}:{self.port}"
+                "REST API server started (blocking): http://%s:%s",
+                self.host,
+                self.port,
             )
-
-        except Exception as e:
-            logger.error(f"start RESTful API server failed : {e}")
-            raise
-
-    def stop(self):
-        """停止服务器"""
-        try:
-            if not self.is_running:
-                logger.warning("server not running")
-                return
-
-            self.is_running = False
-
-            if self.server_thread and self.server_thread.is_alive():
-                # 等待服务器线程结束
-                self.server_thread.join(timeout=5)
-
-            logger.info("RESTful API server stopped")
-
-        except Exception as e:
-            logger.error(f"stop RESTful API server failed : {e}")
-
-    def _run_server(self):
-        """运行服务器"""
-        try:
-            if not FLASK_AVAILABLE or not self.app:
-                logger.error("Flask not available , unable to run server")
+            try:
+                self._server.run()
+            finally:
                 self.is_running = False
-                return
 
-            self.app.run(
-                host=self.host,
-                port=self.port,
-                debug=self.debug,
-                threaded=True,
-                use_reloader=False,
-            )
-        except Exception as e:
-            logger.error(f"server run failed : {e}")
-            self.is_running = False
+    def stop(self) -> None:
+        if not self.is_running or not self._server:
+            logger.warning("REST API server is not running")
+            return
+
+        self._server.should_exit = True
+        if self.server_thread and self.server_thread.is_alive():
+            self.server_thread.join(timeout=5)
+
+        self.is_running = False
+        self._server = None
+        self.server_thread = None
+        logger.info("REST API server stopped")
 
     def get_server_info(self) -> Dict[str, Any]:
-        """获取服务器信息"""
-        return {
+        """Get server information including middleware stats"""
+        info = {
             "server_name": "SimTradeData REST API",
             "version": "1.0.0",
             "host": self.host,
@@ -411,13 +416,70 @@ class RESTAPIServer:
             "endpoints": [
                 "GET /api/v1/health",
                 "GET /api/v1/stocks",
-                "GET /api/v1/stocks/{symbol}/price",
+                "GET /api/v1/stocks/{symbol}",
+                "GET /api/v1/stocks/{symbol}/history",
                 "GET /api/v1/stocks/{symbol}/fundamentals",
-                "GET /api/v1/stocks/{symbol}/industry",
-                "GET /api/v1/stocks/{symbol}/indicators",
-                "GET /api/v1/etf/{symbol}/holdings",
-                "GET /api/v1/sectors",
-                "GET /api/v1/sectors/{sector_code}/constituents",
-                "GET /api/v1/market/stats",
+                "GET /api/v1/stocks/{symbol}/snapshot",
+                "GET /api/v1/snapshots",
+                "GET /api/v1/meta/stats",
             ],
         }
+
+        # Add middleware statistics
+        if self.request_logger:
+            info["logging_stats"] = self.request_logger.get_stats()
+
+        if self.rate_limiter:
+            info["rate_limit_stats"] = self.rate_limiter.get_stats()
+
+        if self.authenticator:
+            info["authentication"] = {
+                "enabled": self.enable_authentication,
+                "registered_keys": len(self.api_keys),
+            }
+
+        return info
+
+    def add_api_key(self, key: str, description: str = ""):
+        """Add API key to authenticator"""
+        if self.authenticator:
+            self.authenticator.add_api_key(key, description)
+        else:
+            self.api_keys[key] = {
+                "description": description,
+                "created_at": datetime.now().isoformat(),
+                "last_used": None,
+            }
+            logger.info("API key added to config: %s...", key[:8])
+
+    def remove_api_key(self, key: str):
+        """Remove API key from authenticator"""
+        if self.authenticator:
+            self.authenticator.remove_api_key(key)
+        elif key in self.api_keys:
+            del self.api_keys[key]
+            logger.info("API key removed from config: %s...", key[:8])
+
+    def cleanup_rate_limit_data(self):
+        """Clean up expired rate limit data"""
+        if self.rate_limiter:
+            self.rate_limiter.cleanup_expired()
+
+    # ------------------------------------------------------------------
+    # 工具方法
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_csv(value: Optional[str]) -> Optional[List[str]]:
+        if value is None:
+            return None
+        items = [item.strip() for item in value.split(",") if item.strip()]
+        return items if items else None
+
+    @staticmethod
+    def _ensure_success(result: Any) -> Dict[str, Any]:
+        if isinstance(result, dict) and result.get("error"):
+            detail = result.get("error_message") or "Unknown error"
+            raise HTTPException(status_code=400, detail=detail)
+        if isinstance(result, dict):
+            return result
+        raise HTTPException(status_code=500, detail="Unexpected response format")

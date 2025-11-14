@@ -438,6 +438,99 @@ class APIRouter:
                 str(e), "STOCK_INFO_QUERY_ERROR", format_type
             )
 
+    def query(self, params: Dict[str, Any]) -> Any:
+        """通用查询接口，用于保持对旧调用方式的兼容"""
+        if not isinstance(params, dict):
+            raise ValueError("params must be a dictionary")
+
+        data_type = params.get("data_type")
+        format_type = params.get("format")
+
+        if not data_type:
+            raise ValueError("data_type is required in query parameters")
+
+        def _normalize_sequence(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                parts = [item.strip() for item in value.split(",") if item.strip()]
+                return parts if len(parts) > 1 else parts[0] if parts else None
+            return value
+
+        def _normalize_fields(value):
+            normalized = _normalize_sequence(value)
+            if normalized is None:
+                return None
+            if isinstance(normalized, list):
+                return normalized
+            return [normalized]
+
+        data_type = str(data_type).lower()
+
+        try:
+            if data_type in {"stock_list", "stock_info"}:
+                symbols = _normalize_sequence(params.get("symbols"))
+                result = self.get_stock_info(
+                    symbols=symbols,
+                    market=params.get("market"),
+                    industry=params.get("industry"),
+                    status=params.get("status", "active"),
+                    fields=_normalize_fields(params.get("fields")),
+                    format_type=format_type,
+                    limit=params.get("limit"),
+                    offset=params.get("offset", 0),
+                    use_cache=params.get("use_cache", True),
+                )
+            elif data_type in {"price_data", "history"}:
+                symbols = _normalize_sequence(params.get("symbols"))
+                result = self.get_history(
+                    symbols=symbols,
+                    start_date=params.get("start_date"),
+                    end_date=params.get("end_date"),
+                    frequency=params.get("frequency", "1d"),
+                    fields=_normalize_fields(params.get("fields")),
+                    format_type=format_type,
+                    limit=params.get("limit"),
+                    offset=params.get("offset", 0),
+                    use_cache=params.get("use_cache", True),
+                )
+            elif data_type in {"fundamentals", "financials"}:
+                symbols = _normalize_sequence(params.get("symbols"))
+                result = self.get_fundamentals(
+                    symbols=symbols,
+                    report_date=params.get("report_date"),
+                    report_type=params.get("report_type"),
+                    fields=_normalize_fields(params.get("fields")),
+                    format_type=format_type,
+                    limit=params.get("limit"),
+                    offset=params.get("offset", 0),
+                    use_cache=params.get("use_cache", True),
+                )
+            elif data_type in {"snapshot", "quote"}:
+                symbols = _normalize_sequence(params.get("symbols"))
+                result = self.get_snapshot(
+                    symbols=symbols,
+                    trade_date=params.get("trade_date"),
+                    market=params.get("market"),
+                    fields=_normalize_fields(params.get("fields")),
+                    format_type=format_type,
+                    limit=params.get("limit"),
+                    offset=params.get("offset", 0),
+                    use_cache=params.get("use_cache", True),
+                )
+            elif data_type == "api_stats":
+                result = self.get_api_stats()
+            elif data_type == "clear_cache":
+                result = self.clear_cache(params.get("pattern"))
+            else:
+                raise ValueError(f"Unsupported data_type: {data_type}")
+
+            return result
+
+        except Exception as exc:
+            logger.error(f"failed to execute query: {exc}")
+            raise
+
     def _execute_query(
         self, sql: str, params: List[Any], query_type: str
     ) -> List[Dict[str, Any]]:

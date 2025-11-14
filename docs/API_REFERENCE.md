@@ -167,7 +167,22 @@ info = adapter.get_stock_info('000001.SZ')
 
 ### Main Endpoints
 
-For detailed REST API documentation, refer to `simtradedata/interfaces/rest_api.py` in the source code.
+SimTradeData ships with a FastAPI-powered REST surface. Core routes include:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/health` | Health probe |
+| GET | `/api/v1/stocks` | List stocks with optional `market`, `industry`, `status`, `fields`, `limit`, `offset` query params |
+| GET | `/api/v1/stocks/{symbol}` | Retrieve a single symbol's profile |
+| GET | `/api/v1/stocks/{symbol}/history` | Historical prices (`start_date`, `end_date`, `frequency`, `fields`, `limit`, `offset`) |
+| GET | `/api/v1/stocks/{symbol}/fundamentals` | Financial metrics (`report_date`, `report_type`, `fields`) |
+| GET | `/api/v1/stocks/{symbol}/snapshot` | Latest snapshot for a symbol |
+| GET | `/api/v1/snapshots` | Batch snapshot retrieval for multiple symbols |
+| GET | `/api/v1/meta/stats` | Router and cache statistics |
+
+> Legacy route `GET /api/v1/stocks/{symbol}/price` remains available as an alias of the `/history` endpoint.
+
+FastAPI automatically serves interactive docs at `/docs` (Swagger UI) and `/redoc`.
 
 ## 📊 Data Source Management API
 

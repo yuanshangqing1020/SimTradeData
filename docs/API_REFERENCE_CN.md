@@ -167,7 +167,22 @@ info = adapter.get_stock_info('000001.SZ')
 
 ### 主要端点
 
-详细的 REST API 文档请参考源代码中的 `simtradedata/interfaces/rest_api.py`。
+SimTradeData 提供基于 FastAPI 的 REST 服务，核心路由如下：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/health` | 健康检查 |
+| GET | `/api/v1/stocks` | 获取股票列表，支持 `market`、`industry`、`status`、`fields`、`limit`、`offset` 等查询参数 |
+| GET | `/api/v1/stocks/{symbol}` | 获取单个股票详情 |
+| GET | `/api/v1/stocks/{symbol}/history` | 获取历史行情（支持 `start_date`、`end_date`、`frequency`、`fields`、`limit`、`offset`） |
+| GET | `/api/v1/stocks/{symbol}/fundamentals` | 获取基本面数据（`report_date`、`report_type`、`fields`） |
+| GET | `/api/v1/stocks/{symbol}/snapshot` | 获取指定股票的最新快照 |
+| GET | `/api/v1/snapshots` | 批量获取多支股票快照 |
+| GET | `/api/v1/meta/stats` | 查看路由与缓存统计信息 |
+
+> 兼容性保留的 `GET /api/v1/stocks/{symbol}/price` 会重定向到新的 `/history` 接口。
+
+FastAPI 自动在 `/docs`（Swagger UI）与 `/redoc` 暴露交互式文档。
 
 ## 📊 数据源管理API
 

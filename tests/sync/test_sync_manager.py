@@ -321,7 +321,14 @@ class TestUpdateStockList:
             {"symbol": "000001", "name": "平安银行", "market": "SZ"},
             {"symbol": "000002", "name": "万科A", "market": "SZ"},
         ]
-        data_source_manager.get_source.return_value = baostock_source
+        qstock_source = Mock()
+        qstock_source.get_stock_list_by_market.return_value = []
+
+        data_source_manager.get_source.side_effect = lambda name: (
+            baostock_source
+            if name == "baostock"
+            else qstock_source if name == "qstock" else None
+        )
 
         manager = SyncManager(
             db_manager, data_source_manager, processing_engine, config
@@ -331,6 +338,47 @@ class TestUpdateStockList:
         assert result["status"] == "completed"
         assert result["new_stocks"] == 2
         assert result["updated_stocks"] == 0
+
+    def test_update_stock_list_with_international_markets(self, real_db_components):
+        """测试更新时包含港股/美股数据"""
+        db_manager, data_source_manager, processing_engine, config = real_db_components
+
+        baostock_source = Mock()
+        baostock_source.is_connected.return_value = True
+        baostock_source.get_stock_info.return_value = [
+            {"symbol": "000001", "name": "平安银行", "market": "SZ"}
+        ]
+
+        qstock_source = Mock()
+        qstock_source.get_stock_list_by_market.side_effect = lambda market: (
+            [{"symbol": "00700.HK", "name": "腾讯控股", "market": "HK"}]
+            if market == "HK"
+            else [{"symbol": "AAPL.US", "name": "Apple", "market": "US"}]
+        )
+
+        data_source_manager.get_source.side_effect = lambda name: (
+            baostock_source
+            if name == "baostock"
+            else qstock_source if name == "qstock" else None
+        )
+
+        manager = SyncManager(
+            db_manager, data_source_manager, processing_engine, config
+        )
+        result = manager._update_stock_list(date(2024, 1, 15))
+
+        assert result["status"] == "completed"
+        assert result["international"]["status"] == "completed"
+        assert result["international"]["new_stocks"] == 2
+
+        stored_symbols = {
+            row["symbol"]
+            for row in db_manager.fetchall(
+                "SELECT symbol FROM stocks WHERE market IN ('HK','US')"
+            )
+        }
+        assert "00700.HK" in stored_symbols
+        assert "AAPL.US" in stored_symbols
 
     def test_update_stock_list_with_existing(self, real_db_components):
         """测试更新已存在股票"""
@@ -349,7 +397,14 @@ class TestUpdateStockList:
             {"symbol": "000001", "name": "平安银行", "market": "SZ"},  # 更新名称
             {"symbol": "000002", "name": "万科A", "market": "SZ"},  # 新股票
         ]
-        data_source_manager.get_source.return_value = baostock_source
+        qstock_source = Mock()
+        qstock_source.get_stock_list_by_market.return_value = []
+
+        data_source_manager.get_source.side_effect = lambda name: (
+            baostock_source
+            if name == "baostock"
+            else qstock_source if name == "qstock" else None
+        )
 
         manager = SyncManager(
             db_manager, data_source_manager, processing_engine, config
@@ -370,7 +425,14 @@ class TestUpdateStockList:
             {"symbol": "399001", "name": "深证成指", "market": "SZ"},  # 指数，应跳过
             {"symbol": "600000", "name": "浦发银行", "market": "SS"},  # 正常股票
         ]
-        data_source_manager.get_source.return_value = baostock_source
+        qstock_source = Mock()
+        qstock_source.get_stock_list_by_market.return_value = []
+
+        data_source_manager.get_source.side_effect = lambda name: (
+            baostock_source
+            if name == "baostock"
+            else qstock_source if name == "qstock" else None
+        )
 
         manager = SyncManager(
             db_manager, data_source_manager, processing_engine, config
@@ -401,6 +463,13 @@ class TestUpdateStockList:
                 (symbol, f"股票{i}", "SZ", "active"),
             )
 
+        qstock_source = Mock()
+        qstock_source.get_stock_list_by_market.return_value = []
+
+        data_source_manager.get_source.side_effect = lambda name: (
+            None if name == "baostock" else qstock_source if name == "qstock" else None
+        )
+
         manager = SyncManager(
             db_manager, data_source_manager, processing_engine, config
         )
@@ -413,7 +482,7 @@ class TestUpdateStockList:
         """测试 BaoStock 不可用时返回错误结果"""
         db_manager, data_source_manager, processing_engine, config = real_db_components
 
-        data_source_manager.get_source.return_value = None
+        data_source_manager.get_source.side_effect = lambda name: None
 
         manager = SyncManager(
             db_manager, data_source_manager, processing_engine, config
