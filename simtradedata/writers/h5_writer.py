@@ -158,6 +158,7 @@ class HDF5Writer:
                 data_columns=True,
                 complevel=9,
                 complib="blosc",
+                min_itemsize={"stock_name": 100},
             )
 
         logger.info(
@@ -282,6 +283,7 @@ class HDF5Writer:
         Write all data types for a single stock
 
         This is a convenience method to write all data in one call.
+        Optimized to minimize file open/close operations.
 
         Args:
             symbol: Stock code in PTrade format
@@ -292,26 +294,104 @@ class HDF5Writer:
             exrights_data: Exrights/dividend data
             metadata: Stock metadata dict
         """
-        if market_data is not None and not market_data.empty:
-            self.write_market_data(symbol, market_data)
+        # Write to ptrade_data.h5 (market, exrights, metadata) in one session
+        has_ptrade_data = (
+            (market_data is not None and not market_data.empty)
+            or (exrights_data is not None and not exrights_data.empty)
+            or metadata
+        )
 
-        if valuation_data is not None and not valuation_data.empty:
-            self.write_valuation(symbol, valuation_data)
+        if has_ptrade_data:
+            with pd.HDFStore(self.ptrade_data_path, mode="a") as store:
+                # Write market data
+                if market_data is not None and not market_data.empty:
+                    market_data = market_data.copy()
+                    if not isinstance(market_data.index, pd.DatetimeIndex):
+                        market_data.index = pd.to_datetime(market_data.index)
+                    key = f"stock_data/{symbol}"
+                    store.put(
+                        key,
+                        market_data,
+                        format="table",
+                        data_columns=True,
+                    )
 
-        if fundamentals_data is not None and not fundamentals_data.empty:
-            self.write_fundamentals(symbol, fundamentals_data)
+                # Write exrights data
+                if exrights_data is not None and not exrights_data.empty:
+                    exrights_data = exrights_data.copy()
+                    if not isinstance(exrights_data.index, pd.DatetimeIndex):
+                        exrights_data.index = pd.to_datetime(exrights_data.index)
+                    key = f"exrights/{symbol}"
+                    store.put(
+                        key,
+                        exrights_data,
+                        format="table",
+                        data_columns=True,
+                    )
 
+                # Write metadata
+                if metadata:
+                    metadata_df = pd.DataFrame([metadata], index=[symbol])
+                    metadata_df.index.name = "stock_code"
+                    store.put(
+                        "stock_metadata",
+                        metadata_df,
+                        format="table",
+                        data_columns=True,
+                        append=True,
+                        min_itemsize={"stock_name": 100},
+                    )
+
+        # Write to ptrade_fundamentals.h5 (valuation, fundamentals) in one session
+        has_fundamentals = (
+            valuation_data is not None and not valuation_data.empty
+        ) or (fundamentals_data is not None and not fundamentals_data.empty)
+
+        if has_fundamentals:
+            with pd.HDFStore(self.ptrade_fundamentals_path, mode="a") as store:
+                # Write valuation data
+                if valuation_data is not None and not valuation_data.empty:
+                    valuation_data = valuation_data.copy()
+                    if not isinstance(valuation_data.index, pd.DatetimeIndex):
+                        valuation_data.index = pd.to_datetime(valuation_data.index)
+                    key = f"valuation/{symbol}"
+                    store.put(
+                        key,
+                        valuation_data,
+                        format="table",
+                        data_columns=True,
+                    )
+
+                # Write fundamentals data
+                if fundamentals_data is not None and not fundamentals_data.empty:
+                    fundamentals_data = fundamentals_data.copy()
+                    if not isinstance(fundamentals_data.index, pd.DatetimeIndex):
+                        fundamentals_data.index = pd.to_datetime(
+                            fundamentals_data.index
+                        )
+                    key = f"fundamentals/{symbol}"
+                    store.put(
+                        key,
+                        fundamentals_data,
+                        format="table",
+                        data_columns=True,
+                    )
+
+        # Write to ptrade_adj_pre.h5 (adjust factor)
         if adjust_factor is not None and not adjust_factor.empty:
-            self.write_adjust_factor(symbol, adjust_factor)
+            adjust_factor = adjust_factor.copy()
+            if not isinstance(adjust_factor.index, pd.DatetimeIndex):
+                adjust_factor.index = pd.to_datetime(adjust_factor.index)
+            adjust_factor.name = "backward_a"
 
-        if exrights_data is not None and not exrights_data.empty:
-            self.write_exrights(symbol, exrights_data)
-
-        if metadata:
-            # Convert metadata dict to DataFrame
-            metadata_df = pd.DataFrame([metadata], index=[symbol])
-            metadata_df.index.name = "stock_code"
-            self.write_stock_metadata(metadata_df, mode="a")
+            with pd.HDFStore(self.ptrade_adj_pre_path, mode="a") as store:
+                store.put(
+                    symbol,
+                    adjust_factor,
+                    format="table",
+                    complevel=9,
+                    complib="blosc:zstd",
+                )
 
         logger.info(f"Wrote all data for {symbol}")
 
