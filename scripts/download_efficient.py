@@ -441,6 +441,16 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
         downloader.standard_fetcher.login()
         
         try:
+            # === Prepare sample dates for stock pool and index constituents ===
+            # This is used for both stock pool sampling and index constituents download
+            full_start_date = datetime.strptime(START_DATE, "%Y-%m-%d").date()
+            sample_dates = pd.date_range(
+                start=full_start_date, end=end_date, freq="QS"
+            ).to_pydatetime().tolist()
+
+            if end_date not in [d.date() for d in sample_dates]:
+                sample_dates.append(datetime.combine(end_date, datetime.min.time()))
+
             # === 1. Get stock pool (use cached if resuming) ===
             cached_pool = progress.get_stock_pool() if progress else []
             completed_count = len(progress.data.get("completed", [])) if progress else 0
@@ -456,13 +466,6 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                     print(f"\nCached stock pool incomplete ({len(cached_pool)} stocks), re-fetching...")
 
                 print("\nGetting stock pool...")
-                full_start_date = datetime.strptime(START_DATE, "%Y-%m-%d").date()
-                sample_dates = pd.date_range(
-                    start=full_start_date, end=end_date, freq="QS"
-                ).to_pydatetime().tolist()
-
-                if end_date not in [d.date() for d in sample_dates]:
-                    sample_dates.append(datetime.combine(end_date, datetime.min.time()))
 
                 all_stocks = set()
                 for date_obj in tqdm(sample_dates, desc="Sampling stock pool"):
@@ -568,7 +571,7 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                 except (FileNotFoundError, KeyError):
                     pass  # No existing metadata, use new data only
 
-                downloader.writer.write_stock_metadata(meta_df, mode='w')
+                downloader.writer.write_stock_metadata(meta_df, mode='a')
             
             # === 5. Download global data ===
             print("\nDownloading global data...")
@@ -590,8 +593,12 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                         downloader.writer.write_trade_days
                     )
                     print(f"  Trading calendar: {len(new_trade_days)} days fetched")
+                else:
+                    print("  Trading calendar: No data fetched (warning)")
+                    logger.warning("No trading calendar data fetched")
             except Exception as e:
                 logger.error(f"Failed to download trading calendar: {e}")
+                print(f"  Trading calendar: Failed to download - {e}")
 
             # 5.2 Benchmark index data
             # Use configured benchmark index (default: CSI300)
@@ -610,8 +617,12 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                         downloader.writer.write_benchmark
                     )
                     print(f"  Benchmark index: {len(benchmark_df)} days fetched")
+                else:
+                    print("  Benchmark index: No data fetched (warning)")
+                    logger.warning(f"No benchmark data fetched for {BENCHMARK_INDEX}")
             except Exception as e:
                 logger.error(f"Failed to download benchmark data: {e}")
+                print(f"  Benchmark index: Failed to download - {e}")
 
             # 5.3 Index constituents
             index_constituents = {}
@@ -672,7 +683,7 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                 'index_constituents': json.dumps(merged_constituents, ensure_ascii=False),
                 'stock_status_history': json.dumps({}, ensure_ascii=False)  # TODO: Build from status_cache
             })
-            downloader.writer.write_global_metadata(global_meta, mode='w')
+            downloader.writer.write_global_metadata(global_meta, mode='a')
             
         finally:
             downloader.unified_fetcher.logout()

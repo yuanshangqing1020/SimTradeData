@@ -436,8 +436,10 @@ class HDF5Writer:
         except KeyError:
             logger.info(f"No existing data for {key}, will create new")
 
-        # Write merged data (always use mode='w' to replace the key)
-        write_method(merged_data, mode='w')
+        # Write merged data
+        # IMPORTANT: Use mode='a' to preserve other keys in the file
+        # mode='w' would truncate the entire file!
+        write_method(merged_data, mode='a')
 
     def get_existing_stocks(self, file_type: str = "market") -> List[str]:
         """
