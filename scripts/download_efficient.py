@@ -578,45 +578,88 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                 progress.set_total(len(stock_pool))
 
             # === 2. Determine stocks to download ===
+            existing_stocks = set(downloader.writer.get_existing_stocks(file_type="market"))
+            
+            # Define tasks: list of (stock_list, start_date, description)
+            download_tasks = []
+            
             if incremental_days:
-                # Incremental mode: update all existing stocks
-                existing_stocks = set(downloader.writer.get_existing_stocks(file_type="market"))
-                need_to_download = sorted(list(existing_stocks))
-                print(f"\nIncremental mode: updating {len(need_to_download)} existing stocks")
+                # Incremental mode: Smart Hybrid approach
+                # Task 1: Update existing stocks (incremental)
+                stocks_to_update = sorted(list(existing_stocks))
+                if stocks_to_update:
+                    download_tasks.append({
+                        'stocks': stocks_to_update,
+                        'start_date': start_date_str, # Calculated as end_date - incremental_days
+                        'desc': 'Updating existing'
+                    })
+                
+                # Task 2: Download new stocks (full history) - e.g. newly added ETFs
+                # These are in stock_pool but not in existing_stocks
+                new_stocks = [s for s in stock_pool if s not in existing_stocks]
+                if new_stocks:
+                    full_start_date_str = datetime.strptime(START_DATE, "%Y-%m-%d").strftime("%Y-%m-%d")
+                    download_tasks.append({
+                        'stocks': new_stocks,
+                        'start_date': full_start_date_str,
+                        'desc': 'Downloading new'
+                    })
+                    print(f"\nIncremental mode with new discovery:")
+                    print(f"  Update: {len(stocks_to_update)} stocks (last {incremental_days} days)")
+                    print(f"  New:    {len(new_stocks)} stocks (full history)")
+                else:
+                    print(f"\nIncremental mode: updating {len(stocks_to_update)} existing stocks")
+                    
             elif progress and resume:
                 # Resume mode: get pending stocks from progress tracker
                 need_to_download = progress.get_pending_stocks(stock_pool)
+                if need_to_download:
+                    download_tasks.append({
+                        'stocks': need_to_download,
+                        'start_date': start_date_str,
+                        'desc': 'Resuming'
+                    })
                 print(f"\nResume mode: {len(need_to_download)} stocks pending")
             else:
                 # Full mode: download new stocks only
-                existing_stocks = set(downloader.writer.get_existing_stocks(file_type="market"))
                 need_to_download = [s for s in stock_pool if s not in existing_stocks]
+                if need_to_download:
+                    download_tasks.append({
+                        'stocks': need_to_download,
+                        'start_date': start_date_str,
+                        'desc': 'Downloading new'
+                    })
                 print(f"\nFull mode: {len(existing_stocks)} stocks exist")
                 print(f"  Need to download: {len(need_to_download)} new stocks")
             
             # === 3. Download stocks in batches ===
-            if not need_to_download:
-                print("\nAll stocks already downloaded! Skipping stock download...")
-                all_metadata = []
-                success = 0
-                fail = 0
-            else:
+            all_metadata = []
+            success = 0
+            fail = 0
+            
+            if not download_tasks:
+                 print("\nAll stocks already downloaded/updated! Skipping stock download...")
+            
+            for task in download_tasks:
+                stocks = task['stocks']
+                task_start_date = task['start_date']
+                desc_text = task['desc']
+                
+                if not stocks:
+                    continue
+                    
                 batches = [
-                    need_to_download[i:i+BATCH_SIZE]
-                    for i in range(0, len(need_to_download), BATCH_SIZE)
+                    stocks[i:i+BATCH_SIZE]
+                    for i in range(0, len(stocks), BATCH_SIZE)
                 ]
 
-                print(f"\nDownloading {len(need_to_download)} stocks in {len(batches)} batches...")
-                print(f"Batch size: {BATCH_SIZE} (sequential processing)")
-                print("Note: BaoStock does not support concurrent downloads\n")
-
-                all_metadata = []
-                success = 0
-                fail = 0
-
-                for batch_idx, batch in enumerate(tqdm(batches, desc="Downloading batches", position=0)):
+                print(f"\n{desc_text}: {len(stocks)} stocks in {len(batches)} batches...")
+                if desc_text == 'Updating existing':
+                    print(f"Date range: {task_start_date} ~ {end_date_str}")
+                
+                for batch_idx, batch in enumerate(tqdm(batches, desc=f"{desc_text} batches", position=0)):
                     try:
-                        metadata_list = downloader.download_batch(batch, start_date_str, end_date_str)
+                        metadata_list = downloader.download_batch(batch, task_start_date, end_date_str)
                         all_metadata.extend(metadata_list)
                         success += len(metadata_list)
                         fail += len(batch) - len(metadata_list)
@@ -624,7 +667,9 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                         logger.error(f"Batch {batch_idx} failed: {e}")
                         fail += len(batch)
 
-                print(f"\nDownload complete: {success} success, {fail} failed")
+                print(f"{desc_text} complete.")
+
+            print(f"\nTotal Download complete: {success} success, {fail} failed")
 
             # Save final progress
             if progress:

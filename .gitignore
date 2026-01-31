@@ -218,3 +218,7 @@ AGENTS.md
 *.h5
 *.png
 research/
+data/
+data_bak/
+*.h5
+download_progress.json
