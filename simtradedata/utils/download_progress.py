@@ -61,6 +61,25 @@ class DownloadProgress:
             try:
                 with open(self.progress_file, 'r') as f:
                     data = json.load(f)
+
+                    # Self-healing: Remove failed stocks from completed list
+                    failed_keys = set(data.get("failed", {}).keys())
+                    if failed_keys:
+                        # Filter completed list
+                        original_completed = data.get("completed", [])
+                        new_completed = [s for s in original_completed if s not in failed_keys]
+                        
+                        if len(original_completed) != len(new_completed):
+                            logger.warning(f"Fixed progress data: Removed {len(original_completed) - len(new_completed)} failed stocks from completed list")
+                            data["completed"] = new_completed
+                    
+                    # Force recalculate stats to fix any drift
+                    if "stats" in data:
+                        data["stats"]["completed"] = len(data.get("completed", []))
+                        data["stats"]["failed"] = len(data.get("failed", {}))
+                        if "total" in data["stats"]:
+                            data["stats"]["remaining"] = data["stats"]["total"] - data["stats"]["completed"] - data["stats"]["failed"]
+
                     logger.info(f"Loaded progress from {self.progress_file}")
                     logger.info(f"  Previous session: {data.get('session_id')}")
                     logger.info(f"  Completed: {len(data.get('completed', []))}")
@@ -117,6 +136,7 @@ class DownloadProgress:
 
         # Update stats
         self.data["stats"]["completed"] = len(self.data["completed"])
+        self.data["stats"]["failed"] = len(self.data["failed"])  # Recalculate failed count
         self.data["stats"]["remaining"] = (
             self.data["stats"]["total"] -
             self.data["stats"]["completed"] -
@@ -129,6 +149,14 @@ class DownloadProgress:
 
     def mark_failed(self, symbol: str, error: str):
         """Mark a stock as failed"""
+        # Remove from completed if exists (to avoid double counting in stats)
+        if symbol in self.data["completed"]:
+            self.data["completed"].remove(symbol)
+            self.data["stats"]["completed"] = len(self.data["completed"])
+            
+        # Remove from partial if exists
+        self.data["partial"].pop(symbol, None)
+
         self.data["failed"][symbol] = {
             "error": error,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")

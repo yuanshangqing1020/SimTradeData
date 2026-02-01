@@ -677,7 +677,12 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                 progress.print_summary()
 
             # === 4. Save metadata ===
-            if all_metadata:
+            # Only save metadata if we actually downloaded it (skip_metadata=False)
+            # OR if we are in full download mode (not incremental) where we might have partial info
+            # If skip_metadata is True, the metadata objects in all_metadata contain empty strings for static info
+            # Writing them would overwrite existing good metadata with empty values due to keep='last'
+            
+            if all_metadata and not skip_metadata:
                 print("\nSaving stock metadata...")
                 meta_df = pd.DataFrame(all_metadata)
                 meta_df.set_index("stock_code", inplace=True)
@@ -695,6 +700,8 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
                     pass  # No existing metadata, use new data only
 
                 downloader.writer.write_stock_metadata(meta_df, mode='a')
+            elif all_metadata and skip_metadata:
+                print("\nSkipping metadata save because skip_metadata=True (prevents overwriting with empty data)")
 
             # === 5. Download global data ===
             print("\nDownloading global data...")
@@ -702,18 +709,31 @@ def download_all_data(incremental_days=None, skip_fundamentals=False, skip_metad
             # 5.1 Trading calendar
             def preprocess_trade_days(df):
                 """Preprocess trading calendar data"""
+                # Ensure is_trading_day is string for comparison
+                if 'is_trading_day' in df.columns:
+                    df['is_trading_day'] = df['is_trading_day'].astype(str)
+                
                 df = df[df['is_trading_day'] == '1']
                 df['trade_date'] = pd.to_datetime(df['calendar_date'])
                 df = df[['trade_date']].set_index('trade_date')
                 return df
 
+            # Fix for missing trade_days in incremental update
+            # Always ensure full date range for calendar download
+            # If we only download last 7 days calendar, the HDF5 file might be overwritten 
+            # with only 7 days of calendar data if using write_trade_days in 'w' mode (unlikely for merge_and_write but possible)
+            # OR more likely: fetch_trade_calendar returns empty if no trading days in short range
+            
+            # Use full historical range for calendar to ensure completeness
+            calendar_start_date = "1990-12-19" # SSE start date
+            
             downloader.download_global_item(
                 name="Trading calendar",
                 fetch_func=downloader.standard_fetcher.fetch_trade_calendar,
                 write_func=downloader.writer.write_trade_days,
                 key='/trade_days',
                 preprocess_func=preprocess_trade_days,
-                start_date=start_date_str,
+                start_date=calendar_start_date, # Always download full calendar
                 end_date=end_date_str
             )
 
