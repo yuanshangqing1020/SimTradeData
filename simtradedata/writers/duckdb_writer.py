@@ -969,67 +969,65 @@ class DuckDBWriter:
         self, symbol_escaped: str, output_file: Path
     ) -> None:
         """
-        Export valuation data with enriched fields:
-        - total_shares, a_floats: forward filled from fundamentals
-        - roe, roa, roe_ttm, roa_ttm: forward filled from fundamentals
-        - naps: calculated as close / pb (derived from pbMRQ definition)
-
-        Uses LAST_VALUE with IGNORE NULLS for forward fill.
+        Export valuation data with enriched fields using ASOF JOIN on publ_date
         """
         self.conn.execute(f"""
             COPY (
-                WITH daily_data AS (
+                WITH raw_fund AS (
                     SELECT
-                        v.date,
-                        v.pe_ttm,
-                        v.pb,
-                        v.ps_ttm,
-                        v.pcf,
-                        v.turnover_rate,
-                        -- Calculate naps from close/pb (pb = close/naps, so naps = close/pb)
-                        -- Need to get close from stocks table
-                        s.close
-                    FROM valuation v
-                    LEFT JOIN stocks s ON v.symbol = s.symbol AND v.date = s.date
-                    WHERE v.symbol = '{symbol_escaped}'
-                ),
-                quarterly_data AS (
-                    SELECT
-                        date,
-                        roe, roa, roe_ttm, roa_ttm,
+                        date, publ_date,
+                        roe, roa,
                         total_shares, a_floats
                     FROM fundamentals
                     WHERE symbol = '{symbol_escaped}'
                 ),
-                combined AS (
+                calc_fund AS (
                     SELECT
-                        d.date,
-                        d.pe_ttm, d.pb, d.ps_ttm, d.pcf,
-                        d.turnover_rate,
-                        d.close,
-                        q.roe AS q_roe,
-                        q.roa AS q_roa,
-                        q.roe_ttm AS q_roe_ttm,
-                        q.roa_ttm AS q_roa_ttm,
-                        q.total_shares AS q_total_shares,
-                        q.a_floats AS q_a_floats
-                    FROM daily_data d
-                    LEFT JOIN quarterly_data q ON d.date = q.date
+                        publ_date,
+                        roe,
+                        AVG(roe) OVER (
+                            ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                        ) AS roe_ttm,
+                        roa,
+                        AVG(roa) OVER (
+                            ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                        ) AS roa_ttm,
+                        total_shares, a_floats
+                    FROM raw_fund
+                ),
+                fund_data AS (
+                    SELECT
+                        -- Convert YYYYMMDD string to DATE
+                        TRY_CAST(strptime(publ_date, '%Y%m%d') AS DATE) as match_date,
+                        roe, roa, roe_ttm, roa_ttm,
+                        total_shares, a_floats
+                    FROM calc_fund
+                    WHERE publ_date IS NOT NULL 
+                      AND publ_date != ''
+                ),
+                val_data AS (
+                    SELECT
+                        date,
+                        pe_ttm, pb, ps_ttm, pcf, turnover_rate,
+                        -- Get close for naps calculation
+                        (SELECT close FROM stocks s WHERE s.symbol = '{symbol_escaped}' AND s.date = v.date) as close
+                    FROM valuation v
+                    WHERE symbol = '{symbol_escaped}'
                 )
                 SELECT
-                    date,
-                    pe_ttm, pb, ps_ttm, pcf,
-                    LAST_VALUE(q_roe IGNORE NULLS) OVER w AS roe,
-                    LAST_VALUE(q_roe_ttm IGNORE NULLS) OVER w AS roe_ttm,
-                    LAST_VALUE(q_roa IGNORE NULLS) OVER w AS roa,
-                    LAST_VALUE(q_roa_ttm IGNORE NULLS) OVER w AS roa_ttm,
-                    CASE WHEN pb > 0 THEN ROUND(close / pb, 4) ELSE NULL END AS naps,
-                    LAST_VALUE(q_total_shares IGNORE NULLS) OVER w AS total_shares,
-                    LAST_VALUE(q_a_floats IGNORE NULLS) OVER w AS a_floats,
-                    turnover_rate
-                FROM combined
-                WINDOW w AS (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-                ORDER BY date
+                    v.date,
+                    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
+                    f.roe, f.roe_ttm, f.roa, f.roa_ttm,
+                    CASE 
+                        WHEN v.pb > 0 AND v.close IS NOT NULL THEN ROUND(v.close / v.pb, 4) 
+                        ELSE NULL 
+                    END AS naps,
+                    f.total_shares,
+                    f.a_floats,
+                    v.turnover_rate
+                FROM val_data v
+                ASOF LEFT JOIN fund_data f ON v.date >= f.match_date
+                ORDER BY v.date
             ) TO '{output_file}' (FORMAT PARQUET)
         """)
 
