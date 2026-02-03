@@ -178,6 +178,12 @@ class MootdxFetcher(BaseFetcher):
             logger.info(f"Fetched {len(df)} daily bars for {symbol}")
             return df
 
+        except ValueError as e:
+            if "No objects to concatenate" in str(e):
+                logger.debug(f"No data for {symbol} (mootdx returned no segments)")
+                return pd.DataFrame()
+            logger.error(f"Failed to fetch daily bars for {symbol}: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to fetch daily bars for {symbol}: {e}")
             raise

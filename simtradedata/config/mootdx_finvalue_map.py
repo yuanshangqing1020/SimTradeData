@@ -73,7 +73,7 @@ FINVALUE_TO_PTRADE = {
     # Profitability analysis
     197: ("roe_weighted", "Weighted ROE", "percent"),
     199: ("net_profit_ratio", "Net profit margin", "percent"),
-    200: ("total_asset_return_rate", "ROA", "percent"),
+    200: ("roa", "ROA", "percent"),
     202: ("gross_income_ratio", "Gross profit margin", "percent"),
 
     # Capital structure
@@ -81,7 +81,7 @@ FINVALUE_TO_PTRADE = {
 
     # Share capital
     238: ("total_shares", "Total shares", "shares"),
-    239: ("float_a_shares", "Float A shares", "shares"),
+    239: ("a_floats", "Float A shares", "shares"),
     242: ("shareholder_count", "Number of shareholders", "count"),
 
     # TTM indicators
@@ -105,10 +105,12 @@ CORE_FUNDAMENTAL_FIELDS = [
     # Growth
     "operating_revenue_grow_rate",
     "net_profit_grow_rate",
+    "total_asset_grow_rate",
 
     # Profitability
     "net_profit_ratio",
     "gross_income_ratio",
+    "roa",
 
     # Solvency
     "current_ratio",
@@ -119,10 +121,43 @@ CORE_FUNDAMENTAL_FIELDS = [
     "accounts_receivables_turnover_rate",
     "total_asset_turnover_rate",
     "interest_cover",
+    "current_assets_turnover_rate",
+    "inventory_turnover_rate",
 
     # Share data
     "total_shares",
+    "a_floats",
+    
+    # Missing fields requested by user
+    "basic_eps_yoy",
+    "np_parent_company_yoy",
 ]
+
+# Chinese name mapping for robust column identification
+# Maps PTrade field name -> Chinese column name substring
+PTRADE_TO_CHINESE = {
+    "basic_eps": "基本每股收益",
+    "nav_ps": "每股净资产",
+    "roe": "净资产收益率",
+    "operating_revenue_grow_rate": "营业收入增长率",
+    "net_profit_grow_rate": "净利润增长率",
+    "total_asset_grow_rate": "总资产增长率",
+    "net_profit_ratio": "销售净利率",
+    "gross_income_ratio": "销售毛利率",
+    "roa": "总资产报酬率",
+    "current_ratio": "流动比率",
+    "quick_ratio": "速动比率",
+    "debt_equity_ratio": "资产负债率",
+    "accounts_receivables_turnover_rate": "应收帐款周转率",
+    "total_asset_turnover_rate": "总资产周转率",
+    "current_assets_turnover_rate": "流动资产周转率",
+    "inventory_turnover_rate": "存货周转率",
+    "total_shares": "总股本",
+    "a_floats": "已上市流通A股",
+    # Proxies for missing fields
+    "basic_eps_yoy": "净利润增长率",
+    "np_parent_company_yoy": "净利润增长率",
+}
 
 
 def parse_finvalue_date(raw_date: int) -> str | None:

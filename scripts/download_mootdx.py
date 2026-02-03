@@ -379,6 +379,11 @@ class MootdxDownloader:
 
                 # Write per-stock fundamentals
                 success_count = 0
+                
+                # Ensure code is available as a column for groupby
+                if "code" not in fund_df.columns and fund_df.index.name == "code":
+                    fund_df = fund_df.reset_index()
+                
                 if "code" in fund_df.columns:
                     self.writer.begin()
                     try:
@@ -466,16 +471,23 @@ def download_all_data(
             skip_stock_download = False
             if global_max_date:
                 # Check if there's any new trading day since global_max_date
-                # by fetching a single stock's data for the date range
-                test_df = downloader.unified_fetcher.fetch_daily_data(
-                    "000001.SZ",
-                    (datetime.strptime(global_max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d"),
-                    end_date_str,
-                )
-                if test_df.empty:
+                next_day = datetime.strptime(global_max_date, "%Y-%m-%d") + timedelta(days=1)
+                next_day_str = next_day.strftime("%Y-%m-%d")
+                
+                if next_day_str > end_date_str:
                     print(f"\nStocks data already up to date (max_date: {global_max_date})")
-                    print("No new trading days since last update, skipping stock download.")
                     skip_stock_download = True
+                else:
+                    # by fetching a single stock's data for the date range
+                    test_df = downloader.unified_fetcher.fetch_daily_data(
+                        "000001.SZ",
+                        next_day_str,
+                        end_date_str,
+                    )
+                    if test_df.empty:
+                        print(f"\nStocks data already up to date (max_date: {global_max_date})")
+                        print("No new trading days since last update, skipping stock download.")
+                        skip_stock_download = True
 
             if not skip_stock_download:
                 # Get stock list from mootdx

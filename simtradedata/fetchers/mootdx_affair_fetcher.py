@@ -16,6 +16,8 @@ import pandas as pd
 from simtradedata.config.mootdx_finvalue_map import (
     CORE_FUNDAMENTAL_FIELDS,
     FINVALUE_TO_PTRADE,
+    PTRADE_TO_CHINESE,
+    PTRADE_TO_FINVALUE,
     parse_finvalue_date,
 )
 
@@ -202,22 +204,105 @@ class MootdxAffairFetcher:
         """
         target_fields = fields or CORE_FUNDAMENTAL_FIELDS
         num_columns = len(raw_df.columns)
+        raw_columns = [str(c) for c in raw_df.columns]
 
-        # Extract columns by position index using iloc to avoid duplicate name issues
         result_data = {}
-        for finvalue_idx, (ptrade_name, desc, unit) in FINVALUE_TO_PTRADE.items():
-            if ptrade_name.startswith("_") or ptrade_name in target_fields:
-                if isinstance(finvalue_idx, int) and finvalue_idx < num_columns:
-                    result_data[ptrade_name] = raw_df.iloc[:, finvalue_idx].values
+        
+        # Build map of column name -> list of indices
+        # This handles duplicate column names by keeping track of all positions
+        col_indices = {}
+        for i, col in enumerate(raw_columns):
+            if col not in col_indices:
+                col_indices[col] = []
+            col_indices[col].append(i)
+        
+        def find_col_index_by_name(chinese_name):
+            # 1. Try exact match
+            if chinese_name in col_indices:
+                return col_indices[chinese_name][0] # Return first match
+            
+            # 2. Try partial match ("ID | Name" format)
+            for col, indices in col_indices.items():
+                if chinese_name in col:
+                    parts = col.split("|")
+                    name_part = parts[-1].strip()
+                    if chinese_name == name_part:
+                        return indices[0]
+            
+            # 3. Try looser partial match
+            for col, indices in col_indices.items():
+                if chinese_name in col:
+                     return indices[0]
+            
+            return None
+
+        # 1. Process target fields
+        for field in target_fields:
+            found = False
+            # Try Chinese name match first (more robust)
+            if field in PTRADE_TO_CHINESE:
+                chinese_name = PTRADE_TO_CHINESE[field]
+                idx = find_col_index_by_name(chinese_name)
+                if idx is not None:
+                    result_data[field] = raw_df.iloc[:, idx].values
+                    found = True
+            
+            # Fallback to index-based mapping
+            if not found and field in PTRADE_TO_FINVALUE:
+                idx = PTRADE_TO_FINVALUE[field]
+                if idx < num_columns:
+                    result_data[field] = raw_df.iloc[:, idx].values
+
+        # 2. Process special fields (dates) always needed if not already present
+        if "_report_date_raw" not in result_data:
+             if num_columns > 0:
+                 result_data["_report_date_raw"] = raw_df.iloc[:, 0].values
+
+        if "_publ_date_raw" not in result_data:
+             idx = find_col_index_by_name("财报公告日期")
+             if idx is not None:
+                 result_data["_publ_date_raw"] = raw_df.iloc[:, idx].values
+             elif 314 in FINVALUE_TO_PTRADE and PTRADE_TO_FINVALUE.get("_publ_date_raw") == 314:
+                 if 314 < num_columns:
+                     result_data["_publ_date_raw"] = raw_df.iloc[:, 314].values
 
         if not result_data:
             logger.warning("No matching columns found in raw data")
             return pd.DataFrame()
 
-        result = pd.DataFrame(result_data)
+        try:
+            result = pd.DataFrame(result_data)
+        except ValueError as e:
+            logger.error(f"Failed to create DataFrame: {e}")
+            # Debug column shapes
+            for k, v in result_data.items():
+                logger.error(f"Field {k} shape: {getattr(v, 'shape', 'unknown')}")
+            return pd.DataFrame()
 
-        # Preserve stock code from index
-        result["code"] = raw_df.index.values
+        # Preserve stock code
+        # Logic to find code column: 'code', '代码', index, or column 0
+        code_values = None
+        if "code" in raw_df.columns:
+            # Handle duplicate 'code' columns safely
+            code_col = raw_df["code"]
+            if isinstance(code_col, pd.DataFrame):
+                code_values = code_col.iloc[:, 0].values
+            else:
+                code_values = code_col.values
+        elif "代码" in raw_df.columns:
+            code_col = raw_df["代码"]
+            if isinstance(code_col, pd.DataFrame):
+                code_values = code_col.iloc[:, 0].values
+            else:
+                code_values = code_col.values
+        elif raw_df.index.name in ["code", "代码"]:
+            code_values = raw_df.index.values
+        else:
+            # Fallback to column 0
+            code_values = raw_df.iloc[:, 0].values
+            
+        result["code"] = [str(x).zfill(6) for x in code_values]
+        result.set_index("code", inplace=True)
 
         # Parse report date (YYMMDD format)
         if "_report_date_raw" in result.columns:
