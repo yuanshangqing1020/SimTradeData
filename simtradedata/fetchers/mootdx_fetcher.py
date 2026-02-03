@@ -184,6 +184,12 @@ class MootdxFetcher(BaseFetcher):
                 return pd.DataFrame()
             logger.error(f"Failed to fetch daily bars for {symbol}: {e}")
             raise
+        except KeyError as e:
+            if "'datetime'" in str(e):
+                logger.debug(f"No data for {symbol} (mootdx returned invalid format/missing datetime)")
+                return pd.DataFrame()
+            logger.error(f"Failed to fetch daily bars for {symbol}: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to fetch daily bars for {symbol}: {e}")
             raise
