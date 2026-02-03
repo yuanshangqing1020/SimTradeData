@@ -35,7 +35,7 @@ LOG_FILE = "data/download_efficient.log"
 LOCK_FILE = "data/.download.lock"
 
 # Date range configuration
-START_DATE = "2015-01-01"
+START_DATE = "2025-06-01"
 END_DATE = None  # None means use current date
 
 # Batch configuration

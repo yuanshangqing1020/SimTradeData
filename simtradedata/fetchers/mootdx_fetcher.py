@@ -455,9 +455,23 @@ class MootdxFetcher(BaseFetcher):
             if hfq_df is None or hfq_df.empty:
                 return pd.DataFrame()
 
+            # Clean up potential index/column ambiguity from mootdx
+            # Mootdx sometimes returns 'date' as both index and column
+            if raw_df.index.name == "date" and "date" in raw_df.columns:
+                raw_df = raw_df.reset_index(drop=True)
+            elif raw_df.index.name == "date":
+                raw_df = raw_df.reset_index()
+
+            if hfq_df.index.name == "date" and "date" in hfq_df.columns:
+                hfq_df = hfq_df.reset_index(drop=True)
+            elif hfq_df.index.name == "date":
+                hfq_df = hfq_df.reset_index()
+
             # Calculate adjust factor: hfq_close / raw_close
-            raw_df = raw_df.rename(columns={"datetime": "date"})
-            hfq_df = hfq_df.rename(columns={"datetime": "date"})
+            if "datetime" in raw_df.columns:
+                raw_df = raw_df.rename(columns={"datetime": "date"})
+            if "datetime" in hfq_df.columns:
+                hfq_df = hfq_df.rename(columns={"datetime": "date"})
 
             raw_df["date"] = pd.to_datetime(raw_df["date"])
             hfq_df["date"] = pd.to_datetime(hfq_df["date"])

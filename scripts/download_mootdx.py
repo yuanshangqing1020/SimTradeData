@@ -34,7 +34,7 @@ LOG_FILE = "data/download_mootdx.log"
 LOCK_FILE = "data/.download_mootdx.lock"
 
 # Date range
-START_DATE = "2015-01-01"
+START_DATE = "2025-06-01"
 END_DATE = None  # None means current date
 
 # Batch size for stock processing
@@ -220,6 +220,8 @@ class MootdxDownloader:
             result["date"] = pd.to_datetime(xdxr_df["datetime"])
         elif "date" in xdxr_df.columns:
             result["date"] = pd.to_datetime(xdxr_df["date"])
+        elif {"year", "month", "day"}.issubset(xdxr_df.columns):
+            result["date"] = pd.to_datetime(xdxr_df[["year", "month", "day"]])
         else:
             return pd.DataFrame()
 
@@ -510,6 +512,7 @@ def download_all_data(
                                 batch, start_date_str, end_date_str, pbar
                             )
                             total_success += success
+                            break
                         except Exception as e:
                             logger.error(f"Batch failed: {e}")
                             pbar.update(len(batch))
