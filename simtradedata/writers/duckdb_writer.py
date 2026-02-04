@@ -891,19 +891,30 @@ class DuckDBWriter:
             # ChiNext/STAR: 20% after 2020-08-24, 10% before
             self.conn.execute(f"""
                 COPY (
+                    WITH raw_data AS (
+                        SELECT
+                            date, open, close, high, low, volume, money,
+                            -- Calculate preclose from previous close if missing
+                            COALESCE(
+                                preclose,
+                                LAG(close) OVER (ORDER BY date)
+                            ) AS final_preclose
+                        FROM stocks
+                        WHERE symbol = '{symbol_escaped}'
+                    )
                     SELECT
                         date, open, close, high, low,
                         CASE
-                            WHEN date >= DATE '2020-08-24' THEN ROUND(preclose * 1.20, 2)
-                            ELSE ROUND(preclose * 1.10, 2)
+                            WHEN date >= DATE '2020-08-24' THEN ROUND(final_preclose * 1.20, 2)
+                            ELSE ROUND(final_preclose * 1.10, 2)
                         END AS high_limit,
                         CASE
-                            WHEN date >= DATE '2020-08-24' THEN ROUND(preclose * 0.80, 2)
-                            ELSE ROUND(preclose * 0.90, 2)
+                            WHEN date >= DATE '2020-08-24' THEN ROUND(final_preclose * 0.80, 2)
+                            ELSE ROUND(final_preclose * 0.90, 2)
                         END AS low_limit,
-                        preclose, volume, money
-                    FROM stocks
-                    WHERE symbol = '{symbol_escaped}'
+                        final_preclose AS preclose,
+                        volume, money
+                    FROM raw_data
                     ORDER BY date
                 ) TO '{output_file}' (FORMAT PARQUET)
             """)
@@ -912,13 +923,24 @@ class DuckDBWriter:
             # For now, use 10% as default; ST detection could be added later
             self.conn.execute(f"""
                 COPY (
+                    WITH raw_data AS (
+                        SELECT
+                            date, open, close, high, low, volume, money,
+                            -- Calculate preclose from previous close if missing
+                            COALESCE(
+                                preclose,
+                                LAG(close) OVER (ORDER BY date)
+                            ) AS final_preclose
+                        FROM stocks
+                        WHERE symbol = '{symbol_escaped}'
+                    )
                     SELECT
                         date, open, close, high, low,
-                        ROUND(preclose * 1.10, 2) AS high_limit,
-                        ROUND(preclose * 0.90, 2) AS low_limit,
-                        preclose, volume, money
-                    FROM stocks
-                    WHERE symbol = '{symbol_escaped}'
+                        ROUND(final_preclose * 1.10, 2) AS high_limit,
+                        ROUND(final_preclose * 0.90, 2) AS low_limit,
+                        final_preclose AS preclose,
+                        volume, money
+                    FROM raw_data
                     ORDER BY date
                 ) TO '{output_file}' (FORMAT PARQUET)
             """)

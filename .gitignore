@@ -218,3 +218,18 @@ AGENTS.md
 *.h5
 *.png
 research/
+
+# Data directories
+data/
+data_v0/
+test_data/
+
+# Large files
+*.duckdb
+*.parquet
+
+# Temporary scripts
+debug_*.py
+reproduce_*.py
+explore_*.py
+verify_*.py
