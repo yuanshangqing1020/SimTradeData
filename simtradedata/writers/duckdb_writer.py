@@ -36,8 +36,35 @@ class DuckDBWriter:
 
         self.conn = duckdb.connect(str(self.db_path))
         self._init_schema()
+        self._migrate_schema()
 
         logger.info(f"DuckDBWriter initialized: {self.db_path}")
+
+    def _migrate_schema(self) -> None:
+        """Migrate schema for existing databases"""
+        try:
+            # Check existing columns in fundamentals
+            existing_cols = set(row[1] for row in self.conn.execute("PRAGMA table_info(fundamentals)").fetchall())
+            
+            new_cols = {
+                "operating_revenue": "DOUBLE",
+                "operating_cost": "DOUBLE",
+                "finance_expense": "DOUBLE",
+                "operating_profit": "DOUBLE",
+                "total_profit": "DOUBLE",
+                "net_profit": "DOUBLE",
+                "np_parent_company": "DOUBLE",
+                "basic_eps": "DOUBLE"
+            }
+            
+            for col, dtype in new_cols.items():
+                if col not in existing_cols:
+                    logger.info(f"Adding column {col} to fundamentals table")
+                    self.conn.execute(f"ALTER TABLE fundamentals ADD COLUMN {col} {dtype}")
+                    
+        except Exception as e:
+            # Table might not exist yet, which is fine as _init_schema handles it
+            pass
 
     def _init_schema(self) -> None:
         """Initialize database schema"""
@@ -102,6 +129,14 @@ class DuckDBWriter:
                 symbol VARCHAR NOT NULL,
                 date DATE NOT NULL,
                 publ_date VARCHAR,
+                operating_revenue DOUBLE,
+                operating_cost DOUBLE,
+                finance_expense DOUBLE,
+                operating_profit DOUBLE,
+                total_profit DOUBLE,
+                net_profit DOUBLE,
+                np_parent_company DOUBLE,
+                basic_eps DOUBLE,
                 operating_revenue_grow_rate DOUBLE,
                 net_profit_grow_rate DOUBLE,
                 basic_eps_yoy DOUBLE,
@@ -507,6 +542,9 @@ class DuckDBWriter:
 
         columns = [
             "symbol", "date", "publ_date",
+            "operating_revenue", "operating_cost", "finance_expense",
+            "operating_profit", "total_profit", "net_profit", 
+            "np_parent_company", "basic_eps",
             "operating_revenue_grow_rate", "net_profit_grow_rate",
             "basic_eps_yoy", "np_parent_company_yoy",
             "net_profit_ratio", "net_profit_ratio_ttm",
@@ -958,6 +996,9 @@ class DuckDBWriter:
             COPY (
                 SELECT
                     date, publ_date,
+                    operating_revenue, operating_cost, finance_expense,
+                    operating_profit, total_profit, net_profit, 
+                    np_parent_company, basic_eps,
                     operating_revenue_grow_rate, net_profit_grow_rate,
                     basic_eps_yoy, np_parent_company_yoy,
                     net_profit_ratio,

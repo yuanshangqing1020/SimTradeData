@@ -128,6 +128,15 @@ CORE_FUNDAMENTAL_FIELDS = [
     "total_shares",
     "a_floats",
     
+    # Income statement (Added for SimTradeLab support)
+    "operating_revenue",
+    "operating_cost",
+    "finance_expense",
+    "operating_profit",
+    "total_profit",
+    "net_profit",
+    "np_parent_company",
+
     # Missing fields requested by user
     "basic_eps_yoy",
     "np_parent_company_yoy",
