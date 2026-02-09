@@ -467,38 +467,47 @@ def download_all_data(
 
         try:
             # Check if stocks data is already up to date
-            global_max_date = downloader.writer.get_max_date("stocks")
-            skip_stock_download = False
-            if global_max_date:
-                # Check if there's any new trading day since global_max_date
-                next_day = datetime.strptime(global_max_date, "%Y-%m-%d") + timedelta(days=1)
-                next_day_str = next_day.strftime("%Y-%m-%d")
+            print("\nFetching stock list from mootdx...")
+            stock_pool = downloader.unified_fetcher.fetch_stock_list()
+            print(f"Total stocks: {len(stock_pool)}")
+            
+            if not stock_pool:
+                print("Error: No stocks found")
+                return
+            
+            # Optimization: Filter out stocks that are already up-to-date
+            # This handles both "Global Up-to-Date" and "New Symbol" scenarios gracefully
+            print("Checking local database for incremental updates...")
+            existing_symbols_map = downloader.writer.get_all_symbols_max_date("stocks")
+            
+            pending_stocks = []
+            skipped_count = 0
+            
+            for symbol in stock_pool:
+                max_date = existing_symbols_map.get(symbol)
                 
-                if next_day_str > end_date_str:
-                    print(f"\nStocks data already up to date (max_date: {global_max_date})")
-                    skip_stock_download = True
+                # Condition 1: New symbol (not in DB) -> Download
+                if not max_date:
+                    pending_stocks.append(symbol)
+                    continue
+                
+                # Condition 2: Existing symbol but data is old -> Download
+                # We need to check if max_date < end_date
+                # Note: max_date is a string 'YYYY-MM-DD'
+                if max_date < end_date_str:
+                    pending_stocks.append(symbol)
                 else:
-                    # by fetching a single stock's data for the date range
-                    test_df = downloader.unified_fetcher.fetch_daily_data(
-                        "000001.SZ",
-                        next_day_str,
-                        end_date_str,
-                    )
-                    if test_df.empty:
-                        print(f"\nStocks data already up to date (max_date: {global_max_date})")
-                        print("No new trading days since last update, skipping stock download.")
-                        skip_stock_download = True
+                    skipped_count += 1
+            
+            if not pending_stocks:
+                print(f"All {len(stock_pool)} stocks are up-to-date.")
+                skip_stock_download = True
+            else:
+                print(f"Need to update {len(pending_stocks)} stocks (Skipped {skipped_count} up-to-date stocks).")
+                stock_pool = pending_stocks
+                skip_stock_download = False
 
             if not skip_stock_download:
-                # Get stock list from mootdx
-                print("\nFetching stock list from mootdx...")
-                stock_pool = downloader.unified_fetcher.fetch_stock_list()
-                print(f"Total stocks: {len(stock_pool)}")
-
-                if not stock_pool:
-                    print("Error: No stocks found")
-                    return
-
                 # Download in batches
                 batches = [
                     stock_pool[i : i + BATCH_SIZE]

@@ -152,8 +152,11 @@ class MootdxUnifiedFetcher:
             if not code or len(code) != 6:
                 continue
 
-            # Only include A-share stocks: 000xxx-003xxx (SZ), 600xxx-605xxx (SH)
+            # Include A-share stocks and ETFs
+            # SZ: 00xxxx (Main), 30xxxx (ChiNext), 15xxxx (ETF)
+            # SH: 60xxxx (Main), 68xxxx (STAR), 51xxxx/58xxxx (ETF)
             first_char = code[0]
+            first_two = code[:2]
             first_three = code[:3]
 
             if first_char in ("0", "3"):
@@ -166,6 +169,11 @@ class MootdxUnifiedFetcher:
                 if first_three in ("600", "601", "603", "605", "688", "689"):
                     ptrade_code = convert_to_ptrade_code(code, "qstock")
                     codes.append(ptrade_code)
+            
+            # ETFs
+            if first_two in ("15", "51", "58"):
+                 ptrade_code = convert_to_ptrade_code(code, "qstock")
+                 codes.append(ptrade_code)
 
         return sorted(codes)
 

@@ -752,19 +752,33 @@ class DuckDBWriter:
     # ========================================
 
     def get_max_date(self, table: str, symbol: str = None) -> Optional[str]:
-        """Get maximum date for incremental update"""
-        if symbol:
-            result = self.conn.execute(f"""
-                SELECT MAX(date) FROM {table} WHERE symbol = ?
-            """, [symbol]).fetchone()
-        else:
-            result = self.conn.execute(f"""
-                SELECT MAX(date) FROM {table}
-            """).fetchone()
+        """Get max date for a table (global or per-symbol)"""
+        try:
+            if symbol:
+                result = self.conn.execute(
+                    f"SELECT MAX(date) FROM {table} WHERE symbol = ?",
+                    [symbol],
+                ).fetchone()
+            else:
+                result = self.conn.execute(
+                    f"SELECT MAX(date) FROM {table}"
+                ).fetchone()
 
-        if result and result[0]:
-            return str(result[0])
-        return None
+            if result and result[0]:
+                return str(result[0])
+            return None
+        except Exception:
+            return None
+
+    def get_all_symbols_max_date(self, table: str) -> dict:
+        """Get max date for all symbols in a table"""
+        try:
+            result = self.conn.execute(
+                f"SELECT symbol, MAX(date) FROM {table} GROUP BY symbol"
+            ).fetchall()
+            return {row[0]: str(row[1]) for row in result if row[1]}
+        except Exception:
+            return {}
 
     def get_min_date(self, table: str, symbol: str = None) -> Optional[str]:
         """Get minimum date for backfill detection"""
