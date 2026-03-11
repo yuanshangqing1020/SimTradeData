@@ -18,8 +18,12 @@ import fcntl
 import logging
 import os
 import sys
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Suppress FutureWarning from mootdx using deprecated pandas fillna(method=...)
+warnings.filterwarnings("ignore", category=FutureWarning, module="mootdx")
 
 import pandas as pd
 from tqdm import tqdm
@@ -474,25 +478,48 @@ def download_all_data(
             # Check if stocks data is already up to date
             global_max_date = downloader.writer.get_max_date("stocks")
             skip_stock_download = False
+            extras_stock_pool = None
             if global_max_date:
                 # Check if there's any new trading day since global_max_date
                 # by fetching a single stock's data for the date range
-                test_df = downloader.unified_fetcher.fetch_daily_data(
-                    "000001.SZ",
-                    (datetime.strptime(global_max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d"),
-                    end_date_str,
-                )
+                try:
+                    test_df = downloader.unified_fetcher.fetch_daily_data(
+                        "000001.SZ",
+                        (datetime.strptime(global_max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d"),
+                        end_date_str,
+                    )
+                except Exception as e:
+                    logger.warning(f"Test fetch for new trading days failed: {e}")
+                    test_df = pd.DataFrame()
+
                 if test_df.empty:
-                    # OHLCV is current, but check if extras are missing
-                    # (e.g. after TDX bulk import, adjust_factors/exrights are empty)
-                    adj_max = downloader.writer.get_max_date("adjust_factors")
-                    if adj_max:
+                    # OHLCV is current (or test fetch failed), check extras coverage
+                    stock_count = downloader.writer.conn.execute(
+                        "SELECT COUNT(DISTINCT symbol) FROM stocks"
+                    ).fetchone()[0]
+                    adj_count = downloader.writer.conn.execute(
+                        "SELECT COUNT(DISTINCT symbol) FROM adjust_factors"
+                    ).fetchone()[0]
+
+                    if adj_count >= stock_count * 0.9:
                         print(f"\nStocks data already up to date (max_date: {global_max_date})")
+                        print(f"Adjust factors coverage: {adj_count}/{stock_count} stocks")
                         print("No new trading days since last update, skipping stock download.")
                         skip_stock_download = True
                     else:
+                        # Only process stocks missing adjust factors or exrights
+                        missing = downloader.writer.conn.execute("""
+                            SELECT DISTINCT s.symbol FROM stocks s
+                            LEFT JOIN (SELECT DISTINCT symbol FROM adjust_factors) a
+                                ON s.symbol = a.symbol
+                            LEFT JOIN (SELECT DISTINCT symbol FROM exrights) x
+                                ON s.symbol = x.symbol
+                            WHERE a.symbol IS NULL OR x.symbol IS NULL
+                        """).fetchall()
+                        extras_stock_pool = [row[0] for row in missing]
                         print(f"\nOHLCV up to date (max_date: {global_max_date})")
-                        print("But adjust factors missing, downloading extras...")
+                        print(f"Adjust factors: {adj_count}/{stock_count}, missing extras: {len(extras_stock_pool)} stocks")
+                        skip_stock_download = True
 
             if not skip_stock_download:
                 # Get stock list from mootdx
@@ -538,6 +565,37 @@ def download_all_data(
                     f"Download complete: {total_success} updated, "
                     f"{len(stock_pool) - total_success} skipped/failed"
                 )
+
+            # Download extras (adjust factors / exrights) for stocks missing them
+            if extras_stock_pool:
+                batches = [
+                    extras_stock_pool[i : i + BATCH_SIZE]
+                    for i in range(0, len(extras_stock_pool), BATCH_SIZE)
+                ]
+                print(f"\nDownloading extras for {len(extras_stock_pool)} stocks in {len(batches)} batches...")
+                print("=" * 60)
+                total_success = 0
+
+                with tqdm(
+                    total=len(extras_stock_pool),
+                    desc="Downloading extras",
+                    unit="stock",
+                    ncols=100,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                ) as pbar:
+                    for batch in batches:
+                        try:
+                            success = downloader.download_batch(
+                                batch, start_date_str, end_date_str, pbar
+                            )
+                            total_success += success
+                        except Exception as e:
+                            logger.error(f"Extras batch failed: {e}")
+                            pbar.update(len(batch))
+
+                print("=" * 60)
+                print(f"Extras complete: {total_success} updated, "
+                      f"{len(extras_stock_pool) - total_success} skipped/failed")
 
             # Download batch fundamentals
             if not skip_fundamentals:
