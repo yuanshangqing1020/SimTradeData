@@ -166,28 +166,31 @@ class SmartRouter:
 
     def get_daily_bars(self, symbol, start_date, end_date):
         """Fetch daily OHLCV bars with automatic source selection."""
+        standard_cols = [
+            "date", "open", "high", "low", "close", "volume", "amount",
+        ]
 
         def fetch_from(fetcher, source_name):
             if source_name == "mootdx":
-                return fetcher.fetch_daily_data(symbol, start_date, end_date)
+                df = fetcher.fetch_daily_data(symbol, start_date, end_date)
             elif source_name == "eastmoney":
-                return fetcher.fetch_daily_bars(symbol, start_date, end_date)
+                df = fetcher.fetch_daily_bars(symbol, start_date, end_date)
             elif source_name == "baostock":
                 df = fetcher.fetch_unified_daily_data(
                     symbol, start_date, end_date,
                 )
-                if df.empty:
-                    return df
-                cols = [
-                    "date", "open", "high", "low", "close", "volume", "amount",
-                ]
-                return df[[c for c in cols if c in df.columns]]
             elif source_name == "yfinance":
                 result = fetcher.fetch_batch_ohlcv(
                     [symbol], start_date, end_date,
                 )
-                return result.get(symbol, pd.DataFrame())
-            raise ValueError(f"Unknown source for daily_bars: {source_name}")
+                df = result.get(symbol, pd.DataFrame())
+            else:
+                raise ValueError(f"Unknown source for daily_bars: {source_name}")
+            if df is None or df.empty:
+                return pd.DataFrame()
+            # Normalize to standard OHLCV columns
+            available = [c for c in standard_cols if c in df.columns]
+            return df[available]
 
         return self._try_fetch("daily_bars", fetch_from, symbol=symbol)
 
