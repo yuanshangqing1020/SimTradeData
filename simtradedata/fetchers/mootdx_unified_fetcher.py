@@ -252,3 +252,26 @@ class MootdxUnifiedFetcher:
             DataFrame with real-time data
         """
         return self._quotes_fetcher.fetch_realtime_quotes(symbols)
+
+    def fetch_minute_bars(
+        self,
+        symbol: str,
+        frequency: int = 0,
+        offset: int = 800,
+    ) -> pd.DataFrame:
+        """
+        Fetch minute-level K-line data.
+
+        Forwards to the inner MootdxFetcher.
+
+        Args:
+            symbol: Stock code in PTrade format
+            frequency: Bar frequency (0=5m, 1=15m, 2=30m, 3=1h, 7=1m)
+            offset: Number of bars to fetch (max 800)
+
+        Returns:
+            DataFrame with minute bars
+        """
+        return self._quotes_fetcher.fetch_minute_bars(
+            symbol, frequency=frequency, offset=offset,
+        )
