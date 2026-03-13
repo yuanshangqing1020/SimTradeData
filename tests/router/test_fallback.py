@@ -126,3 +126,74 @@ class TestTryFetch:
         self._inject(router, "s2", StubFetcherOK())
         df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
         assert not df.empty
+
+
+class StubFetcherFundamentals:
+    """Stub fetcher with fundamentals support."""
+
+    def login(self):
+        pass
+
+    def logout(self):
+        pass
+
+    def fetch_fundamentals_for_quarter(self, year, quarter):
+        return pd.DataFrame({
+            "end_date": [f"{year}-{quarter * 3:02d}-30"],
+            "roe": [15.0],
+        })
+
+    def fetch_fundamentals(self, symbol):
+        return pd.DataFrame({"date": ["2024-03-31"], "roe": [12.0]})
+
+
+class StubFetcherValuation:
+    """Stub fetcher with valuation support."""
+
+    def login(self):
+        pass
+
+    def logout(self):
+        pass
+
+    def fetch_unified_daily_data(self, symbol, start_date, end_date):
+        return pd.DataFrame({
+            "date": ["2024-01-02"],
+            "open": [10.0], "high": [11.0], "low": [9.0],
+            "close": [10.5], "volume": [1000], "amount": [10500.0],
+            "peTTM": [20.0], "pbMRQ": [3.5], "psTTM": [5.0],
+            "pcfNcfTTM": [15.0], "turn": [1.2],
+        })
+
+
+class TestFundamentals:
+    def test_quarterly_batch(self):
+        config = {"fundamentals": {"cn": ["stub_fund"]}}
+        router = SmartRouter(config=config)
+        router._fetchers["stub_fund"] = StubFetcherFundamentals()
+        df = router.get_fundamentals(year=2024, quarter=1)
+        assert not df.empty
+        assert "roe" in df.columns
+
+    def test_per_stock(self):
+        config = {"fundamentals": {"us": ["stub_fund"]}}
+        router = SmartRouter(config=config)
+        router._fetchers["stub_fund"] = StubFetcherFundamentals()
+        df = router.get_fundamentals(symbol="AAPL.US")
+        assert not df.empty
+
+    def test_no_args_raises(self):
+        router = SmartRouter()
+        with pytest.raises(ValueError, match="Provide"):
+            router.get_fundamentals()
+
+
+class TestValuation:
+    def test_baostock_extracts_valuation_cols(self):
+        config = {"valuation": {"cn": ["baostock"]}}
+        router = SmartRouter(config=config)
+        router._fetchers["baostock"] = StubFetcherValuation()
+        df = router.get_valuation("600000.SS", "2024-01-01", "2024-12-31")
+        assert not df.empty
+        assert "peTTM" in df.columns
+        assert "open" not in df.columns

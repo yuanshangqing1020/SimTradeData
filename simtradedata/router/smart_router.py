@@ -190,3 +190,155 @@ class SmartRouter:
             raise ValueError(f"Unknown source for daily_bars: {source_name}")
 
         return self._try_fetch("daily_bars", fetch_from, symbol=symbol)
+
+    def get_adjust_factor(self, symbol, start_date, end_date):
+        """Fetch backward adjust factors with automatic source selection."""
+
+        def fetch_from(fetcher, source_name):
+            if source_name == "yfinance":
+                result = fetcher.fetch_adjust_factors(
+                    [symbol], start_date, end_date,
+                )
+                return result.get(symbol, pd.DataFrame())
+            return fetcher.fetch_adjust_factor(symbol, start_date, end_date)
+
+        return self._try_fetch("adjust_factor", fetch_from, symbol=symbol)
+
+    def get_xdxr(self, symbol):
+        """Fetch ex-dividend/ex-rights data."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_xdxr(symbol)
+
+        return self._try_fetch("xdxr", fetch_from, symbol=symbol)
+
+    def get_money_flow(self, symbol, start_date, end_date):
+        """Fetch daily money flow data."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_money_flow(symbol, start_date, end_date)
+
+        return self._try_fetch("money_flow", fetch_from, symbol=symbol)
+
+    def get_lhb(self, start_date, end_date):
+        """Fetch Dragon Tiger Board records."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_lhb(start_date, end_date)
+
+        return self._try_fetch("lhb", fetch_from, market="cn")
+
+    def get_margin(self, symbol, start_date, end_date):
+        """Fetch margin trading data."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_margin(symbol, start_date, end_date)
+
+        return self._try_fetch("margin", fetch_from, symbol=symbol)
+
+    def get_stock_list(self, market="cn"):
+        """Fetch stock list for the given market."""
+
+        def fetch_from(fetcher, source_name):
+            result = fetcher.fetch_stock_list()
+            if isinstance(result, pd.DataFrame):
+                return result
+            # Wrap list in DataFrame so _try_fetch empty-check works
+            if isinstance(result, list) and result:
+                return pd.DataFrame({"symbol": result})
+            return pd.DataFrame()
+
+        df = self._try_fetch("stock_list", fetch_from, market=market)
+        if df.empty:
+            return []
+        if "symbol" in df.columns:
+            return df["symbol"].tolist()
+        return df
+
+    def get_trade_calendar(self, start_date, end_date):
+        """Fetch trading calendar."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_trade_calendar(start_date, end_date)
+
+        return self._try_fetch("trade_calendar", fetch_from, market="cn")
+
+    def get_index_data(self, symbol, start_date, end_date):
+        """Fetch index OHLCV data."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_index_data(symbol, start_date, end_date)
+
+        return self._try_fetch("index_data", fetch_from, symbol=symbol)
+
+    def get_realtime_quotes(self, symbols):
+        """Fetch real-time quotes for multiple stocks."""
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_realtime_quotes(symbols)
+
+        return self._try_fetch("realtime_quotes", fetch_from, market="cn")
+
+    def get_minute_bars(self, symbol, frequency=0, offset=800):
+        """Fetch minute-level K-line data.
+
+        Args:
+            symbol: PTrade format code.
+            frequency: Bar frequency (0=5m, 1=15m, 2=30m, 3=1h, 7=1m).
+            offset: Number of bars to fetch (max 800).
+        """
+
+        def fetch_from(fetcher, source_name):
+            return fetcher.fetch_minute_bars(symbol, frequency, offset)
+
+        return self._try_fetch("minute_bars", fetch_from, symbol=symbol)
+
+    def get_fundamentals(self, symbol=None, year=None, quarter=None):
+        """Fetch financial fundamentals.
+
+        Two access patterns:
+        - Batch quarterly (A-share): get_fundamentals(year=2024, quarter=1)
+        - Per-stock (US): get_fundamentals(symbol='AAPL.US')
+        """
+        if year is not None and quarter is not None:
+            market = "cn" if symbol is None else self._detect_market(symbol)
+
+            def fetch_from(fetcher, source_name):
+                return fetcher.fetch_fundamentals_for_quarter(year, quarter)
+
+            return self._try_fetch("fundamentals", fetch_from, market=market)
+
+        if symbol is not None:
+            def fetch_from(fetcher, source_name):
+                return fetcher.fetch_fundamentals(symbol)
+
+            return self._try_fetch("fundamentals", fetch_from, symbol=symbol)
+
+        raise ValueError("Provide (year, quarter) or symbol")
+
+    def get_valuation(self, symbol, start_date, end_date):
+        """Fetch valuation metrics (PE, PB, PS, etc.)."""
+        valuation_cols = [
+            "date", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM", "turn",
+        ]
+
+        def fetch_from(fetcher, source_name):
+            if source_name == "baostock":
+                df = fetcher.fetch_unified_daily_data(
+                    symbol, start_date, end_date,
+                )
+                if df.empty:
+                    return df
+                available = [c for c in valuation_cols if c in df.columns]
+                return df[available]
+            elif source_name == "yfinance":
+                ohlcv_result = fetcher.fetch_batch_ohlcv(
+                    [symbol], start_date, end_date,
+                )
+                ohlcv_df = ohlcv_result.get(symbol, pd.DataFrame())
+                if ohlcv_df.empty:
+                    return pd.DataFrame()
+                return fetcher.fetch_valuation_data(symbol, ohlcv_df)
+            raise ValueError(f"valuation not supported by {source_name}")
+
+        return self._try_fetch("valuation", fetch_from, symbol=symbol)

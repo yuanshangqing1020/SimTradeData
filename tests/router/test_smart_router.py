@@ -48,3 +48,28 @@ class TestResolveSources:
         custom = {"daily_bars": {"cn": ["eastmoney"]}}
         router = SmartRouter(config=custom)
         assert router._resolve_sources("daily_bars", "cn") == ["eastmoney"]
+
+
+class TestPublicAPISignatures:
+    """Verify all public API methods exist and are callable."""
+
+    METHODS = [
+        "get_daily_bars", "get_adjust_factor", "get_xdxr",
+        "get_money_flow", "get_lhb", "get_margin",
+        "get_stock_list", "get_trade_calendar", "get_index_data",
+        "get_realtime_quotes", "get_minute_bars",
+        "get_fundamentals", "get_valuation",
+    ]
+
+    def test_all_methods_exist(self):
+        router = SmartRouter()
+        for method_name in self.METHODS:
+            assert hasattr(router, method_name), f"Missing method: {method_name}"
+            assert callable(getattr(router, method_name))
+
+
+class TestModuleExports:
+    def test_import_from_package(self):
+        from simtradedata.router import SmartRouter, DataSourceError, NoSourceAvailable
+        assert SmartRouter is not None
+        assert issubclass(NoSourceAvailable, DataSourceError)
