@@ -46,7 +46,7 @@ def convert_to_ptrade_code(code: str, source: str = "baostock") -> str:
         # Determine market by code prefix
         if code.startswith("6") or code.startswith("5"):
             return f"{code}.SS"  # Shanghai uses .SS
-        elif code.startswith("0") or code.startswith("3"):
+        elif code[0] in ("0", "1", "3"):
             return f"{code}.SZ"
         return code
 
@@ -132,6 +132,59 @@ def get_mootdx_market(symbol: str) -> int:
     """
     code = symbol.split(".")[0] if "." in symbol else symbol
     return 0 if code[0] in "0123" else 1
+
+
+_ETF_PREFIXES = ("15", "16", "50", "51", "52", "56", "58", "59")
+
+
+def is_etf_code(symbol: str) -> bool:
+    """
+    Check whether *symbol* is an ETF, LOF, or other exchange-traded fund.
+
+    Accepts both bare codes (``"159919"``) and PTrade-style codes
+    (``"159919.SZ"``).  The decision is based on the first two digits of
+    the numeric part.
+
+    Returns:
+        True if the code matches a known ETF/LOF prefix, False otherwise.
+    """
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    return code[:2] in _ETF_PREFIXES
+
+
+def get_security_type(symbol: str) -> str:
+    """
+    Classify *symbol* as ``"stock"``, ``"etf"``, or ``"index"``.
+
+    Rules (applied in order):
+    1. ETF/LOF — first two digits match ``_ETF_PREFIXES``.
+    2. Index   — ``399xxx`` is always an index; ``000xxx`` on the ``.SS``
+       market (Shanghai) is an index (e.g. 000001.SS = SSE Composite).
+    3. Everything else is treated as a stock.
+    """
+    if is_etf_code(symbol):
+        return "etf"
+
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    market = symbol.split(".")[1] if "." in symbol else ""
+
+    if code.startswith("399"):
+        return "index"
+    if code.startswith("000") and market == "SS":
+        return "index"
+
+    return "stock"
+
+
+def get_price_divisor(symbol: str) -> float:
+    """
+    Return the price divisor needed to correct raw TDX API prices.
+
+    The TDX protocol returns ETF/LOF prices multiplied by 10.  This
+    helper returns ``10.0`` for fund codes and ``1.0`` for everything else
+    so callers can simply divide: ``price / get_price_divisor(code)``.
+    """
+    return 10.0 if is_etf_code(symbol) else 1.0
 
 
 def retry_on_failure(max_retries: int = 1, delay: float = 0.0):
