@@ -1,0 +1,94 @@
+"""Tests for the circuit breaker module: three-state model."""
+
+import time
+
+import pytest
+
+from simtradedata.resilience.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitState,
+)
+
+
+@pytest.mark.unit
+class TestCircuitBreaker:
+    """Tests for CircuitBreaker state transitions."""
+
+    def _make_breaker(
+        self,
+        failure_threshold: int = 3,
+        success_threshold: int = 2,
+        timeout: float = 0.05,
+    ) -> CircuitBreaker:
+        """Create a circuit breaker with fast-test defaults."""
+        config = CircuitBreakerConfig(
+            failure_threshold=failure_threshold,
+            success_threshold=success_threshold,
+            timeout=timeout,
+        )
+        return CircuitBreaker("test", config=config)
+
+    def test_starts_closed(self):
+        cb = self._make_breaker()
+        assert cb.state is CircuitState.CLOSED
+
+    def test_opens_after_failure_threshold(self):
+        cb = self._make_breaker(failure_threshold=3)
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.state is CircuitState.OPEN
+
+    def test_stays_closed_below_threshold(self):
+        cb = self._make_breaker(failure_threshold=3)
+        cb.record_failure()
+        cb.record_failure()
+        assert cb.state is CircuitState.CLOSED
+
+    def test_success_resets_failure_count(self):
+        cb = self._make_breaker(failure_threshold=3)
+        # Two failures, then a success resets the count.
+        cb.record_failure()
+        cb.record_failure()
+        cb.record_success()
+        # Two more failures should not open (total only 2 since reset).
+        cb.record_failure()
+        cb.record_failure()
+        assert cb.state is CircuitState.CLOSED
+
+    def test_transitions_to_half_open_after_timeout(self):
+        cb = self._make_breaker(failure_threshold=3, timeout=0.05)
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.state is CircuitState.OPEN
+        time.sleep(0.06)
+        assert cb.state is CircuitState.HALF_OPEN
+
+    def test_half_open_closes_on_success_threshold(self):
+        cb = self._make_breaker(
+            failure_threshold=3, success_threshold=2, timeout=0.05,
+        )
+        # Drive to OPEN.
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.state is CircuitState.OPEN
+        # Wait for timeout to reach HALF_OPEN.
+        time.sleep(0.06)
+        assert cb.state is CircuitState.HALF_OPEN
+        # Meet the success threshold.
+        cb.record_success()
+        cb.record_success()
+        assert cb.state is CircuitState.CLOSED
+
+    def test_half_open_reopens_on_failure(self):
+        cb = self._make_breaker(failure_threshold=3, timeout=0.05)
+        # Drive to OPEN.
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.state is CircuitState.OPEN
+        # Wait for timeout to reach HALF_OPEN.
+        time.sleep(0.06)
+        assert cb.state is CircuitState.HALF_OPEN
+        # A single failure should reopen.
+        cb.record_failure()
+        assert cb.state is CircuitState.OPEN
