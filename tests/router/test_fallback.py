@@ -1,0 +1,128 @@
+"""Integration tests for SmartRouter fallback behavior.
+
+Uses real (stub) fetcher subclasses instead of mocks,
+per project convention (CLAUDE.md: no mocks except external systems).
+"""
+import pandas as pd
+import pytest
+
+from simtradedata.router.exceptions import DataSourceError, NoSourceAvailable
+from simtradedata.router.smart_router import SmartRouter
+
+
+class StubFetcherOK:
+    """Stub fetcher that returns valid data."""
+
+    source_name = "stub_ok"
+
+    def login(self):
+        pass
+
+    def logout(self):
+        pass
+
+    def fetch_daily_data(self, symbol, start_date, end_date):
+        return pd.DataFrame({
+            "date": ["2024-01-02"],
+            "open": [10.0], "high": [11.0], "low": [9.0],
+            "close": [10.5], "volume": [1000], "amount": [10500.0],
+        })
+
+
+class StubFetcherEmpty:
+    """Stub fetcher that returns empty DataFrame."""
+
+    source_name = "stub_empty"
+
+    def login(self):
+        pass
+
+    def logout(self):
+        pass
+
+    def fetch_daily_data(self, symbol, start_date, end_date):
+        return pd.DataFrame()
+
+
+class StubFetcherFail:
+    """Stub fetcher that raises an exception."""
+
+    source_name = "stub_fail"
+
+    def login(self):
+        pass
+
+    def logout(self):
+        pass
+
+    def fetch_daily_data(self, symbol, start_date, end_date):
+        raise ConnectionError("stub connection error")
+
+
+def _stub_fetch_from(fetcher, source_name):
+    """Generic fetch_from for testing _try_fetch directly."""
+    return fetcher.fetch_daily_data("600000.SS", "2024-01-01", "2024-12-31")
+
+
+class TestTryFetch:
+    """Test the core _try_fetch fallback mechanism."""
+
+    def _make_router(self, source_names):
+        config = {"daily_bars": {"cn": source_names}}
+        return SmartRouter(config=config)
+
+    def _inject(self, router, name, fetcher):
+        router._fetchers[name] = fetcher
+
+    def test_first_source_succeeds(self):
+        router = self._make_router(["s1"])
+        self._inject(router, "s1", StubFetcherOK())
+        df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+        assert not df.empty
+        assert "close" in df.columns
+
+    def test_fallback_on_failure(self):
+        router = self._make_router(["s1", "s2"])
+        self._inject(router, "s1", StubFetcherFail())
+        self._inject(router, "s2", StubFetcherOK())
+        df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+        assert not df.empty
+
+    def test_fallback_on_empty(self):
+        router = self._make_router(["s1", "s2"])
+        self._inject(router, "s1", StubFetcherEmpty())
+        self._inject(router, "s2", StubFetcherOK())
+        df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+        assert not df.empty
+
+    def test_all_empty_returns_empty(self):
+        router = self._make_router(["s1"])
+        self._inject(router, "s1", StubFetcherEmpty())
+        df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+        assert df.empty
+
+    def test_all_fail_raises(self):
+        router = self._make_router(["s1"])
+        self._inject(router, "s1", StubFetcherFail())
+        with pytest.raises(DataSourceError, match="s1"):
+            router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+
+    def test_no_source_for_market_raises(self):
+        router = self._make_router(["s1"])
+        self._inject(router, "s1", StubFetcherOK())
+        with pytest.raises(NoSourceAvailable):
+            router._try_fetch("daily_bars", _stub_fetch_from, symbol="AAPL.US")
+
+    def test_circuit_breaker_skips_unhealthy(self):
+        class StubWithOpenCB(StubFetcherFail):
+            class _cb:
+                @staticmethod
+                def is_available():
+                    return False
+            _circuit_breaker = _cb()
+
+        router = self._make_router(["s1", "s2"])
+        self._inject(router, "s1", StubWithOpenCB())
+        self._inject(router, "s2", StubFetcherOK())
+        df = router._try_fetch("daily_bars", _stub_fetch_from, symbol="600000.SS")
+        assert not df.empty
