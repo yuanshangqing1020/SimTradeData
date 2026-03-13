@@ -3,7 +3,6 @@
 import pytest
 
 from simtradedata.utils.code_utils import (
-    _ETF_PREFIXES,
     convert_to_ptrade_code,
     get_mootdx_market,
     get_price_divisor,

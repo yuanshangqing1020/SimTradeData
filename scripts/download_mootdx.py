@@ -517,8 +517,15 @@ def download_all_data(
                             WHERE a.symbol IS NULL OR x.symbol IS NULL
                         """).fetchall()
                         extras_stock_pool = [row[0] for row in missing]
+                        from simtradedata.utils.code_utils import is_etf_code
+                        etf_count = sum(1 for s in extras_stock_pool if is_etf_code(s))
                         print(f"\nOHLCV up to date (max_date: {global_max_date})")
-                        print(f"Adjust factors: {adj_count}/{stock_count}, missing extras: {len(extras_stock_pool)} stocks")
+                        print(
+                            f"But adjust factors incomplete ({adj_count}/{stock_count}), "
+                            f"downloading extras..."
+                        )
+                        print(f"  Missing: {len(extras_stock_pool)} "
+                              f"({etf_count} ETFs, {len(extras_stock_pool) - etf_count} stocks)")
                         skip_stock_download = True
 
             if not skip_stock_download:

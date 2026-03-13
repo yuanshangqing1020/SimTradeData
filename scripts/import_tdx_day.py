@@ -37,7 +37,7 @@ from typing import Iterator, Tuple
 import pandas as pd
 from tqdm import tqdm
 
-from simtradedata.utils.code_utils import convert_to_ptrade_code
+from simtradedata.utils.code_utils import convert_to_ptrade_code, is_etf_code
 from simtradedata.writers.duckdb_writer import DEFAULT_DB_PATH, DuckDBWriter
 
 # Configuration
@@ -65,7 +65,7 @@ console.setLevel(logging.WARNING)
 logger.addHandler(console)
 
 
-def parse_tdx_day_file(data: bytes) -> pd.DataFrame:
+def parse_tdx_day_file(data: bytes, price_divisor: float = 100.0) -> pd.DataFrame:
     """
     Parse TDX binary .day file content.
 
@@ -81,6 +81,7 @@ def parse_tdx_day_file(data: bytes) -> pd.DataFrame:
 
     Args:
         data: Raw binary content of .day file
+        price_divisor: Divisor for raw prices. 100.0 for stocks, 1000.0 for ETFs.
 
     Returns:
         DataFrame with columns: date, open, high, low, close, volume, money
@@ -113,10 +114,10 @@ def parse_tdx_day_file(data: bytes) -> pd.DataFrame:
             records.append(
                 {
                     "date": f"{year:04d}-{month:02d}-{day:02d}",
-                    "open": open_p / 100.0,
-                    "high": high / 100.0,
-                    "low": low / 100.0,
-                    "close": close / 100.0,
+                    "open": open_p / price_divisor,
+                    "high": high / price_divisor,
+                    "low": low / price_divisor,
+                    "close": close / price_divisor,
                     "volume": volume,
                     "money": amount,
                 }
@@ -214,13 +215,13 @@ def filename_to_ptrade_code(filename: str) -> str:
 
 def is_stock_code(filename: str) -> bool:
     """
-    Check if filename represents a stock (not index/fund/bond).
+    Check if filename represents a stock or ETF (not index/bond/warrant).
 
     Args:
-        filename: e.g., 'sh600000.day'
+        filename: e.g., 'sh600000.day', 'sz159919.day'
 
     Returns:
-        True if it's a stock code
+        True if it's a stock or ETF code
     """
     base = filename.replace(".day", "")
     market = base[:2]
@@ -229,19 +230,17 @@ def is_stock_code(filename: str) -> bool:
     if len(code) != 6:
         return False
 
-    # Shanghai stocks: 600xxx, 601xxx, 603xxx, 605xxx (main), 688xxx, 689xxx (STAR)
-    # Shenzhen stocks: 000xxx, 001xxx, 002xxx, 003xxx (main), 300xxx, 301xxx (ChiNext)
-    # Beijing stocks: 43xxxx, 83xxxx, 87xxxx, 92xxxx (mostly)
-    # Indices: usually start with 000xxx (SH) or 399xxx (SZ)
+    # ETF/LOF/fund prefixes (both markets)
+    etf_prefixes = ("15", "16", "50", "51", "52", "56", "58", "59")
+    if code[:2] in etf_prefixes:
+        return True
 
+    # Stock prefixes by market
     if market == "sh":
-        # SH stocks start with 6
         return code[0] == "6"
     elif market == "sz":
-        # SZ stocks: 00xxxx (main board) or 30xxxx (ChiNext)
         return code[:2] in ("00", "30")
     elif market == "bj":
-        # BJ stocks
         return code[:2] in ("43", "83", "87", "92")
 
     return False
@@ -391,7 +390,10 @@ class TdxDayImporter:
                     continue
 
                 # Parse data
-                df = parse_tdx_day_file(data)
+                # Determine price divisor: 1000 for ETF/LOF, 100 for stocks
+                bare_code = filename.replace(".day", "")[2:]
+                divisor = 1000.0 if is_etf_code(bare_code) else 100.0
+                df = parse_tdx_day_file(data, price_divisor=divisor)
                 if df.empty:
                     self.stats["files_skipped"] += 1
                     continue

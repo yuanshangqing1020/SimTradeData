@@ -16,6 +16,7 @@ from simtradedata.resilience.retry import RetryConfig, retry
 from simtradedata.utils.code_utils import (
     convert_from_ptrade_code,
     get_mootdx_market,
+    get_price_divisor,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,13 @@ class MootdxFetcher(BaseFetcher):
                     "vol": "volume",
                 }
             )
+
+            # Apply price divisor for ETF/LOF (TDX returns 10x prices)
+            divisor = get_price_divisor(symbol)
+            if divisor != 1.0:
+                for col in ("open", "high", "low", "close"):
+                    if col in df.columns:
+                        df[col] = df[col] / divisor
 
             # Convert date column
             if "date" in df.columns:

@@ -145,27 +145,26 @@ class MootdxUnifiedFetcher:
         if df.empty:
             return []
 
-        # Filter to actual stock codes (exclude indices, funds, etc.)
+        # Filter to stock and ETF codes (exclude indices, bonds, warrants)
+        sz_stock_prefixes = ("000", "001", "002", "003", "300", "301")
+        sh_stock_prefixes = ("600", "601", "603", "605", "688", "689")
+        etf_prefixes = ("15", "16", "50", "51", "52", "56", "58", "59")
+
         codes = []
         for _, row in df.iterrows():
             code = str(row.get("code", "")).strip()
             if not code or len(code) != 6:
                 continue
 
-            # Only include A-share stocks: 000xxx-003xxx (SZ), 600xxx-605xxx (SH)
-            first_char = code[0]
+            first_two = code[:2]
             first_three = code[:3]
 
-            if first_char in ("0", "3"):
-                # Shenzhen main board, ChiNext
-                if first_three in ("000", "001", "002", "003", "300", "301"):
-                    ptrade_code = convert_to_ptrade_code(code, "qstock")
-                    codes.append(ptrade_code)
-            elif first_char == "6":
-                # Shanghai main board, STAR Market
-                if first_three in ("600", "601", "603", "605", "688", "689"):
-                    ptrade_code = convert_to_ptrade_code(code, "qstock")
-                    codes.append(ptrade_code)
+            if first_three in sz_stock_prefixes or first_three in sh_stock_prefixes:
+                ptrade_code = convert_to_ptrade_code(code, "qstock")
+                codes.append(ptrade_code)
+            elif first_two in etf_prefixes:
+                ptrade_code = convert_to_ptrade_code(code, "qstock")
+                codes.append(ptrade_code)
 
         return sorted(codes)
 
