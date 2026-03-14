@@ -2,9 +2,9 @@ English | [中文](README_zh.md)
 
 # SimTradeData - Quantitative Trading Data Downloader
 
-> **BaoStock + Mootdx + yfinance Multi-Source** | **China A-Shares + US Stocks** | **PTrade Compatible** | **DuckDB + Parquet Storage**
+> **BaoStock + Mootdx + EastMoney + yfinance Multi-Source** | **China A-Shares + US Stocks** | **PTrade Compatible** | **DuckDB + Parquet Storage**
 
-**SimTradeData** is an efficient data download tool designed for [SimTradeLab](https://github.com/kay-ou/SimTradeLab). It supports China A-shares (BaoStock, Mootdx) and US stocks (yfinance) from multiple data sources, automatically orchestrating each source's strengths. Data is stored in DuckDB as intermediate storage and exported to Parquet format, with efficient incremental updates and querying.
+**SimTradeData** is an efficient data download tool designed for [SimTradeLab](https://github.com/kay-ou/SimTradeLab). It supports China A-shares (BaoStock, Mootdx, EastMoney) and US stocks (yfinance) from multiple data sources, automatically orchestrating each source's strengths. Data is stored in DuckDB as intermediate storage and exported to Parquet format, with efficient incremental updates and querying.
 
 ---
 
@@ -153,6 +153,16 @@ poetry run python scripts/download_efficient.py --valuation-only  # Valuation + 
 # Mootdx (faster, but no valuation data)
 poetry run python scripts/download_mootdx.py
 poetry run python scripts/download_mootdx.py --skip-fundamentals
+```
+
+**EastMoney Complementary Data (Money Flow, Dragon Tiger Board, Margin Trading)**
+
+```bash
+# Download last 30 days of complementary data (requires existing market data)
+poetry run python scripts/download_daily_extras.py
+
+# Specify number of days (LHB API only retains ~30 days, run regularly)
+poetry run python scripts/download_daily_extras.py --days 7
 ```
 
 **US Stock Data (yfinance)**
