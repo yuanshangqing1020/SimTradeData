@@ -468,8 +468,9 @@ poetry run python scripts/test_smart_router_live.py
 
 如果这个项目对您有帮助，欢迎赞助支持开发！
 
-<img src="docs/sponsor/WechatPay.png?raw=true" alt="微信赞助" width="200">
-<img src="docs/sponsor/AliPay.png?raw=true" alt="支付宝赞助" width="200">
+| 微信赞助 | 支付宝赞助 |
+|:---:|:---:|
+| <img src="docs/sponsor/WechatPay.png?raw=true" alt="微信赞助" width="200"> | <img src="docs/sponsor/AliPay.png?raw=true" alt="支付宝赞助" width="200"> |
 
 **您的支持是我们持续改进的动力！**
 

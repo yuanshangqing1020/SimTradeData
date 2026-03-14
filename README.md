@@ -467,8 +467,9 @@ poetry run python scripts/test_smart_router_live.py
 
 If this project helps you, consider sponsoring!
 
-<img src="docs/sponsor/WechatPay.png?raw=true" alt="WeChat Pay" width="200">
-<img src="docs/sponsor/AliPay.png?raw=true" alt="Alipay" width="200">
+| WeChat Pay | Alipay |
+|:---:|:---:|
+| <img src="docs/sponsor/WechatPay.png?raw=true" alt="WeChat Pay" width="200"> | <img src="docs/sponsor/AliPay.png?raw=true" alt="Alipay" width="200"> |
 
 ## License
 
