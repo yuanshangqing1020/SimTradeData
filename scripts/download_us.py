@@ -476,40 +476,40 @@ def download_us_data(
                 print("\nAll stocks already have latest OHLCV data.")
 
             # Phase 3: Per-stock fundamentals + valuation
-            if not skip_fundamentals:
-                print(f"\nDownloading fundamentals for {len(stock_list)} stocks...")
+            if not skip_fundamentals and needs_ohlcv:
+                print(f"\nDownloading fundamentals for {len(needs_ohlcv)} stocks...")
                 print("=" * 60)
                 with tqdm(
-                    total=len(stock_list),
+                    total=len(needs_ohlcv),
                     desc="Fundamentals",
                     unit="stock",
                     ncols=100,
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
                 ) as pbar:
                     n = downloader.download_fundamentals_and_valuation(
-                        stock_list, pbar
+                        needs_ohlcv, pbar
                     )
                 print("=" * 60)
                 print(f"Fundamentals complete: {n} updated, "
-                      f"{len(stock_list) - n} skipped/failed")
+                      f"{len(needs_ohlcv) - n} skipped/failed")
 
             # Phase 4: Per-stock metadata + exrights
-            if not skip_metadata:
-                print(f"\nDownloading metadata for {len(stock_list)} stocks...")
+            if not skip_metadata and needs_ohlcv:
+                print(f"\nDownloading metadata for {len(needs_ohlcv)} stocks...")
                 print("=" * 60)
                 with tqdm(
-                    total=len(stock_list),
+                    total=len(needs_ohlcv),
                     desc="Metadata",
                     unit="stock",
                     ncols=100,
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
                 ) as pbar:
                     n = downloader.download_metadata_and_exrights(
-                        stock_list, pbar
+                        needs_ohlcv, pbar
                     )
                 print("=" * 60)
                 print(f"Metadata complete: {n} updated, "
-                      f"{len(stock_list) - n} skipped/failed")
+                      f"{len(needs_ohlcv) - n} skipped/failed")
 
             # Phase 5: Global data
             print("\nDownloading benchmark & index data...")
