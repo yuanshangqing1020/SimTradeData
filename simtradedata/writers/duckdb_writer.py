@@ -1008,7 +1008,7 @@ class DuckDBWriter:
             else:
                 self.conn.execute(f"""
                     COPY (
-                        SELECT * EXCLUDE (symbol) FROM {table}
+                        SELECT * EXCLUDE (symbol) REPLACE (date::TIMESTAMP AS date) FROM {table}
                         WHERE symbol = '{symbol_escaped}'
                         ORDER BY date
                     ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
@@ -1029,7 +1029,7 @@ class DuckDBWriter:
         if market == "us":
             self.conn.execute(f"""
                 COPY (
-                    SELECT date, open, close, high, low,
+                    SELECT date::TIMESTAMP AS date, open, close, high, low,
                         NULL AS high_limit, NULL AS low_limit,
                         preclose, volume, money
                     FROM stocks
@@ -1049,7 +1049,7 @@ class DuckDBWriter:
             self.conn.execute(f"""
                 COPY (
                     SELECT
-                        date, open, close, high, low,
+                        date::TIMESTAMP AS date, open, close, high, low,
                         CASE
                             WHEN date >= DATE '2020-08-24' THEN ROUND(preclose * 1.20, 2)
                             ELSE ROUND(preclose * 1.10, 2)
@@ -1070,7 +1070,7 @@ class DuckDBWriter:
             self.conn.execute(f"""
                 COPY (
                     SELECT
-                        date, open, close, high, low,
+                        date::TIMESTAMP AS date, open, close, high, low,
                         ROUND(preclose * 1.10, 2) AS high_limit,
                         ROUND(preclose * 0.90, 2) AS low_limit,
                         preclose, volume, money
@@ -1094,7 +1094,7 @@ class DuckDBWriter:
         self.conn.execute(f"""
             COPY (
                 SELECT
-                    date, publ_date,
+                    date::TIMESTAMP AS date, publ_date,
                     operating_revenue_grow_rate, net_profit_grow_rate,
                     basic_eps_yoy, np_parent_company_yoy,
                     net_profit_ratio,
@@ -1134,7 +1134,7 @@ class DuckDBWriter:
             COPY (
                 WITH daily_data AS (
                     SELECT
-                        v.date,
+                        v.date::TIMESTAMP AS date,
                         v.pe_ttm,
                         v.pb,
                         v.ps_ttm,

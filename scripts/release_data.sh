@@ -3,8 +3,8 @@
 # Usage: bash scripts/release_data.sh [--market cn|us|all]
 #
 # This script:
-# 1. Runs DuckDB export_to_parquet → output/
-# 2. Packages output/ into a single tar.gz
+# 1. Runs export_parquet.py → data/export/{market}/
+# 2. Packages into a single tar.gz
 # 3. Creates/updates a GitHub Release on this repo
 #
 # Prerequisites: poetry install, gh auth login
@@ -13,7 +13,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUTPUT_DIR="$PROJECT_ROOT/output"
 
 # Parse arguments
 MARKET="cn"
@@ -32,30 +31,15 @@ fi
 
 release_market() {
   local market="$1"
-
-  if [ "$market" = "us" ]; then
-    local db_path="$PROJECT_ROOT/data/us_stocks.duckdb"
-  else
-    local db_path="$PROJECT_ROOT/data/simtradedata.duckdb"
-  fi
-
-  if [ ! -f "$db_path" ]; then
-    echo "SKIP: $db_path not found"
-    return
-  fi
+  local export_dir="$PROJECT_ROOT/data/export/$market"
 
   # 1. Export
-  echo "=== Exporting $market data from DuckDB ==="
+  echo "=== Exporting $market data ==="
   cd "$PROJECT_ROOT"
-  poetry run python -c "
-from simtradedata.writers.duckdb_writer import DuckDBWriter
-w = DuckDBWriter('$db_path')
-w.export_to_parquet('$OUTPUT_DIR', market='$market')
-w.close()
-"
+  poetry run python scripts/export_parquet.py --market "$market"
 
-  # Read version (data date) from exported manifest
-  local manifest="$OUTPUT_DIR/manifest.json"
+  # Read version from manifest
+  local manifest="$export_dir/manifest.json"
   if [ ! -f "$manifest" ]; then
     echo "ERROR: Export did not produce manifest.json"
     return 1
@@ -69,7 +53,7 @@ w.close()
   # 2. Package
   echo ""
   echo "=== Packaging ${market} ${version} ==="
-  tar -czf "$archive" -C "$OUTPUT_DIR" .
+  tar -czf "$archive" -C "$export_dir" .
 
   local size
   size=$(ls -lh "$archive" | awk '{print $5}')

@@ -1,49 +1,63 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Export DuckDB data to PTrade Parquet format
+Export DuckDB data to Parquet format
 
 Usage:
-    poetry run python scripts/export_parquet.py
-    poetry run python scripts/export_parquet.py --output /path/to/output
+    poetry run python scripts/export_parquet.py                  # export CN
+    poetry run python scripts/export_parquet.py --market us      # export US
+    poetry run python scripts/export_parquet.py --market us --output /custom/path
 """
 
 import argparse
 import logging
 from pathlib import Path
 
-from simtradedata.writers.duckdb_writer import DEFAULT_DB_PATH, DuckDBWriter
+from simtradedata.writers.duckdb_writer import DuckDBWriter
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
+
+# market → DuckDB path
+DB_PATHS = {
+    "cn": "data/cn.duckdb",
+    "us": "data/us.duckdb",
+}
+
+# Legacy DB names → canonical names (for auto-migration)
+_LEGACY_DB = {
+    "data/simtradedata.duckdb": "data/cn.duckdb",
+    "data/us_stocks.duckdb": "data/us.duckdb",
+}
+
+
+def _resolve_db(market: str) -> str:
+    """Resolve DB path, auto-migrating legacy names."""
+    canonical = DB_PATHS[market]
+    if Path(canonical).exists():
+        return canonical
+    # Check legacy names
+    for legacy, target in _LEGACY_DB.items():
+        if target == canonical and Path(legacy).exists():
+            return legacy
+    return canonical
 
 
 def export_to_parquet(db_path: str, output_dir: str, market: str = "cn") -> None:
-    """
-    Export DuckDB to PTrade Parquet format
-
-    Args:
-        db_path: Path to DuckDB database
-        output_dir: Output directory for Parquet files
-    """
     print("=" * 70)
-    print("SimTradeData Parquet Export")
+    print(f"SimTradeData Export  [{market.upper()}]")
     print("=" * 70)
-    print(f"Source: {db_path}")
-    print(f"Output: {output_dir}")
+    print(f"  DB:     {db_path}")
+    print(f"  Output: {output_dir}")
     print("=" * 70)
 
-    db_file = Path(db_path)
-    if not db_file.exists():
+    if not Path(db_path).exists():
         print(f"\nError: Database not found: {db_path}")
-        print("Run download_efficient.py first to download data.")
         return
 
     writer = DuckDBWriter(db_path=db_path)
-
     try:
         writer.export_to_parquet(output_dir, market=market)
 
@@ -60,61 +74,43 @@ def export_to_parquet(db_path: str, output_dir: str, market: str = "cn") -> None
             return sum(f.stat().st_size for f in path.glob("*.parquet")) / (1024 * 1024)
 
         print("\nExport Statistics:")
-        print(f"  stocks/: {count_files('stocks')} files, {get_dir_size('stocks'):.1f} MB")
-        print(f"  exrights/: {count_files('exrights')} files, {get_dir_size('exrights'):.1f} MB")
-        print(
-            f"  fundamentals/: {count_files('fundamentals')} files, "
-            f"{get_dir_size('fundamentals'):.1f} MB"
-        )
-        print(
-            f"  valuation/: {count_files('valuation')} files, "
-            f"{get_dir_size('valuation'):.1f} MB"
-        )
-        print(f"  metadata/: {count_files('metadata')} files, {get_dir_size('metadata'):.1f} MB")
+        print(f"  stocks/:       {count_files('stocks'):>5} files, {get_dir_size('stocks'):>8.1f} MB")
+        print(f"  exrights/:     {count_files('exrights'):>5} files, {get_dir_size('exrights'):>8.1f} MB")
+        print(f"  fundamentals/: {count_files('fundamentals'):>5} files, {get_dir_size('fundamentals'):>8.1f} MB")
+        print(f"  valuation/:    {count_files('valuation'):>5} files, {get_dir_size('valuation'):>8.1f} MB")
+        print(f"  metadata/:     {count_files('metadata'):>5} files, {get_dir_size('metadata'):>8.1f} MB")
 
-        adj_pre = output_path / "ptrade_adj_pre.parquet"
-        adj_post = output_path / "ptrade_adj_post.parquet"
-        if adj_pre.exists():
-            print(f"  ptrade_adj_pre.parquet: {adj_pre.stat().st_size / (1024*1024):.1f} MB")
-        if adj_post.exists():
-            print(f"  ptrade_adj_post.parquet: {adj_post.stat().st_size / (1024*1024):.1f} MB")
+        for name in ["ptrade_adj_pre.parquet", "ptrade_adj_post.parquet"]:
+            f = output_path / name
+            if f.exists():
+                print(f"  {name}: {f.stat().st_size / (1024*1024):.1f} MB")
 
-        print("\nExport complete!")
+        print(f"\nDone! → {output_dir}")
 
     finally:
         writer.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Export DuckDB to PTrade Parquet format"
-    )
+    parser = argparse.ArgumentParser(description="Export DuckDB to Parquet")
     parser.add_argument(
-        "--db",
-        type=str,
-        default=DEFAULT_DB_PATH,
-        help=f"DuckDB database path (default: {DEFAULT_DB_PATH})",
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="data/parquet",
-        help="Output directory for Parquet files (default: data/parquet)",
-    )
-    parser.add_argument(
-        "--market",
-        choices=["cn", "us"],
-        default="cn",
+        "--market", choices=["cn", "us"], default="cn",
         help="Market to export (default: cn)",
     )
-
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="Output directory (default: data/export/{market})",
+    )
+    parser.add_argument(
+        "--db", type=str, default=None,
+        help="Override DuckDB path (default: auto by market)",
+    )
     args = parser.parse_args()
 
-    db_path = args.db
-    if args.market == "us":
-        db_path = "data/us_stocks.duckdb"
+    db_path = args.db or _resolve_db(args.market)
+    output_dir = args.output or f"data/export/{args.market}"
 
-    export_to_parquet(db_path, args.output, market=args.market)
+    export_to_parquet(db_path, output_dir, market=args.market)
 
 
 if __name__ == "__main__":

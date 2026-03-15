@@ -47,25 +47,31 @@
 
 ```
 data/
-├── simtradedata.duckdb          # DuckDB 数据库 - A股（下载时使用）
-├── us_stocks.duckdb             # DuckDB 数据库 - 美股（下载时使用）
-└── parquet/                     # 导出的 Parquet 文件
-    ├── stocks/                  # 股票日线行情（每股票一个文件）
-    │   ├── 000001.SZ.parquet
-    │   └── 600000.SS.parquet
-    ├── exrights/                # 除权除息事件
-    ├── fundamentals/            # 季度财务数据（含TTM）
-    ├── valuation/               # 估值指标（日频）
-    ├── metadata/                # 元数据
-    │   ├── stock_metadata.parquet
-    │   ├── benchmark.parquet
-    │   ├── trade_days.parquet
-    │   ├── index_constituents.parquet
-    │   ├── stock_status.parquet
-    │   └── version.parquet
-    ├── ptrade_adj_pre.parquet   # 前复权因子
-    ├── ptrade_adj_post.parquet  # 后复权因子
-    └── manifest.json            # 数据包清单
+├── simtradedata.duckdb          # DuckDB 数据库 - A股（下载源）
+├── us_stocks.duckdb             # DuckDB 数据库 - 美股（下载源）
+└── export/                      # 导出的 Parquet 文件（按市场分目录）
+    ├── cn/                      # A股导出
+    │   ├── stocks/              # 日线行情（每只股票一个文件）
+    │   │   ├── 000001.SZ.parquet
+    │   │   └── 600519.SS.parquet
+    │   ├── exrights/            # 除权除息事件
+    │   ├── fundamentals/        # 季度财务数据（含TTM）
+    │   ├── valuation/           # 估值指标（日频）
+    │   ├── metadata/            # 元数据
+    │   ├── ptrade_adj_pre.parquet
+    │   ├── ptrade_adj_post.parquet
+    │   └── manifest.json
+    └── us/                      # 美股导出
+        ├── stocks/
+        │   ├── AAPL.US.parquet
+        │   └── MSFT.US.parquet
+        ├── exrights/
+        ├── fundamentals/
+        ├── valuation/
+        ├── metadata/
+        ├── ptrade_adj_pre.parquet
+        ├── ptrade_adj_post.parquet
+        └── manifest.json
 ```
 
 ## 快速开始
@@ -209,14 +215,14 @@ poetry run python scripts/download_tdx_day.py --file hsjday.zip
 #### 3. 导出为 Parquet
 
 ```bash
-# 导出 A股（默认）
+# 导出 A股 → data/export/cn/
 poetry run python scripts/export_parquet.py
 
-# 导出美股
+# 导出美股 → data/export/us/
 poetry run python scripts/export_parquet.py --market us
 
-# 指定输出目录
-poetry run python scripts/export_parquet.py --output data/parquet
+# 自定义输出目录
+poetry run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
 #### 4. 发布到 GitHub（维护者）
@@ -235,8 +241,9 @@ bash scripts/release_data.sh --market cn 1.3.0
 #### 5. 在 SimTradeLab 中使用
 
 ```bash
-# 复制 Parquet 文件到 SimTradeLab 数据目录
-cp -r data/parquet/* /path/to/SimTradeLab/data/
+# 复制导出数据到 SimTradeLab 数据目录
+rsync -a data/export/cn/ /path/to/SimTradeLab/data/cn/
+rsync -a data/export/us/ /path/to/SimTradeLab/data/us/
 ```
 
 ## 项目架构

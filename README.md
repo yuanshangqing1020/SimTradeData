@@ -47,25 +47,31 @@ English | [中文](README_zh.md)
 
 ```
 data/
-├── simtradedata.duckdb          # DuckDB database - A-shares (used during download)
-├── us_stocks.duckdb             # DuckDB database - US stocks (used during download)
-└── parquet/                     # Exported Parquet files
-    ├── stocks/                  # Daily stock bars (one file per stock)
-    │   ├── 000001.SZ.parquet
-    │   └── 600000.SS.parquet
-    ├── exrights/                # Corporate action events
-    ├── fundamentals/            # Quarterly financials (with TTM)
-    ├── valuation/               # Valuation metrics (daily frequency)
-    ├── metadata/                # Metadata
-    │   ├── stock_metadata.parquet
-    │   ├── benchmark.parquet
-    │   ├── trade_days.parquet
-    │   ├── index_constituents.parquet
-    │   ├── stock_status.parquet
-    │   └── version.parquet
-    ├── ptrade_adj_pre.parquet   # Forward adjustment factors
-    ├── ptrade_adj_post.parquet  # Backward adjustment factors
-    └── manifest.json            # Data package manifest
+├── simtradedata.duckdb          # DuckDB database - A-shares (download source)
+├── us_stocks.duckdb             # DuckDB database - US stocks (download source)
+└── export/                      # Exported Parquet files (by market)
+    ├── cn/                      # A-shares export
+    │   ├── stocks/              # Daily bars (one file per stock)
+    │   │   ├── 000001.SZ.parquet
+    │   │   └── 600519.SS.parquet
+    │   ├── exrights/            # Corporate action events
+    │   ├── fundamentals/        # Quarterly financials (with TTM)
+    │   ├── valuation/           # Valuation metrics (daily)
+    │   ├── metadata/            # Metadata
+    │   ├── ptrade_adj_pre.parquet
+    │   ├── ptrade_adj_post.parquet
+    │   └── manifest.json
+    └── us/                      # US stocks export
+        ├── stocks/
+        │   ├── AAPL.US.parquet
+        │   └── MSFT.US.parquet
+        ├── exrights/
+        ├── fundamentals/
+        ├── valuation/
+        ├── metadata/
+        ├── ptrade_adj_pre.parquet
+        ├── ptrade_adj_post.parquet
+        └── manifest.json
 ```
 
 ## Quick Start
@@ -209,14 +215,14 @@ poetry run python scripts/download_tdx_day.py --file hsjday.zip
 #### 3. Export to Parquet
 
 ```bash
-# Export A-shares (default)
+# Export A-shares → data/export/cn/
 poetry run python scripts/export_parquet.py
 
-# Export US stocks
+# Export US stocks → data/export/us/
 poetry run python scripts/export_parquet.py --market us
 
-# Specify output directory
-poetry run python scripts/export_parquet.py --output data/parquet
+# Custom output directory
+poetry run python scripts/export_parquet.py --market cn --output /custom/path
 ```
 
 #### 4. Release to GitHub (Maintainer)
@@ -235,8 +241,9 @@ bash scripts/release_data.sh --market cn 1.3.0
 #### 5. Use in SimTradeLab
 
 ```bash
-# Copy Parquet files to SimTradeLab data directory
-cp -r data/parquet/* /path/to/SimTradeLab/data/
+# Copy exported data to SimTradeLab data directory
+rsync -a data/export/cn/ /path/to/SimTradeLab/data/cn/
+rsync -a data/export/us/ /path/to/SimTradeLab/data/us/
 ```
 
 ## Project Architecture
@@ -280,7 +287,12 @@ SimTradeData/
 │   └── utils/
 │       ├── code_utils.py        # Stock code conversion
 │       └── ttm_calculator.py    # Quarterly range calculation
-├── data/                        # Data directory
+├── data/                        # Data directory (gitignored)
+│   ├── simtradedata.duckdb      # A-shares DuckDB source
+│   ├── us_stocks.duckdb         # US stocks DuckDB source
+│   └── export/                  # Parquet exports
+│       ├── cn/                  # A-shares export
+│       └── us/                  # US stocks export
 └── docs/                        # Documentation
     ├── PTRADE_PARQUET_FORMAT.md # Parquet format specification
     └── PTrade_API_mini_Reference.md
@@ -397,8 +409,9 @@ BATCH_SIZE = 20
 # 1. Incremental download (fetches only new data, automatically skips existing)
 poetry run python scripts/download.py
 
-# 2. Export to Parquet (overwrites previous export)
-poetry run python scripts/export_parquet.py
+# 2. Export to Parquet
+poetry run python scripts/export_parquet.py              # CN → data/export/cn/
+poetry run python scripts/export_parquet.py --market us  # US → data/export/us/
 ```
 
 Step 1 automatically detects the latest date of existing data in DuckDB and only downloads the delta. When there are no new trading days, all stocks are skipped in seconds.
