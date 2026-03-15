@@ -45,6 +45,3 @@ STRATEGIES_PATH = get_strategies_path()
 # DuckDB database path
 DUCKDB_PATH = DATA_PATH / "simtradedata.duckdb"
 
-# Parquet export path
-PARQUET_EXPORT_PATH = DATA_PATH / "parquet"
-
