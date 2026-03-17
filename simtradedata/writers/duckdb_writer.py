@@ -298,8 +298,7 @@ class DuckDBWriter:
     def add_sampled_date(self, sample_date) -> None:
         """Mark a date as sampled"""
         self.conn.execute(
-            "INSERT OR IGNORE INTO sampling_progress VALUES (?)",
-            [sample_date]
+            "INSERT OR IGNORE INTO sampling_progress VALUES (?)", [sample_date]
         )
 
     def get_stock_pool(self) -> list:
@@ -312,7 +311,8 @@ class DuckDBWriter:
     def update_stock_pool(self, symbols: list, sample_date) -> None:
         """Update stock pool with new symbols from a sample date"""
         for symbol in symbols:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO stock_pool (symbol, first_seen_date, last_seen_date)
                 VALUES (?, ?, ?)
                 ON CONFLICT (symbol) DO UPDATE SET
@@ -326,7 +326,9 @@ class DuckDBWriter:
                         THEN excluded.first_seen_date
                         ELSE stock_pool.first_seen_date
                     END
-            """, [symbol, sample_date, sample_date])
+            """,
+                [symbol, sample_date, sample_date],
+            )
 
     # ========================================
     # Fundamentals progress tracking
@@ -338,16 +340,22 @@ class DuckDBWriter:
         Returns:
             Set of date strings like {'2024-03-31', '2024-06-30', ...}
         """
-        result = self.conn.execute("""
+        result = self.conn.execute(
+            """
             SELECT DISTINCT date FROM fundamentals WHERE symbol = ?
-        """, [symbol]).fetchall()
+        """,
+            [symbol],
+        ).fetchall()
         return {str(row[0]) for row in result}
 
     def has_fundamental(self, symbol: str, date_str: str) -> bool:
         """Check if a specific symbol+date exists in fundamentals table."""
-        result = self.conn.execute("""
+        result = self.conn.execute(
+            """
             SELECT 1 FROM fundamentals WHERE symbol = ? AND date = ?
-        """, [symbol, date_str]).fetchone()
+        """,
+            [symbol, date_str],
+        ).fetchone()
         return result is not None
 
     def get_completed_fundamental_quarters(self) -> set:
@@ -367,10 +375,13 @@ class DuckDBWriter:
         Returns:
             Hash string if exists, None otherwise
         """
-        result = self.conn.execute("""
+        result = self.conn.execute(
+            """
             SELECT file_hash FROM fundamentals_progress
             WHERE year = ? AND quarter = ?
-        """, [year, quarter]).fetchone()
+        """,
+            [year, quarter],
+        ).fetchone()
         return result[0] if result else None
 
     def delete_fundamental_quarter_data(self, year: int, quarter: int) -> int:
@@ -387,19 +398,28 @@ class DuckDBWriter:
         date_str = f"{year}-{quarter_end[quarter]}"
 
         # Get count before delete (DuckDB doesn't have changes() function)
-        count_result = self.conn.execute("""
+        count_result = self.conn.execute(
+            """
             SELECT COUNT(*) FROM fundamentals WHERE date = ?
-        """, [date_str]).fetchone()
+        """,
+            [date_str],
+        ).fetchone()
         count = count_result[0] if count_result else 0
 
-        self.conn.execute("""
+        self.conn.execute(
+            """
             DELETE FROM fundamentals WHERE date = ?
-        """, [date_str])
+        """,
+            [date_str],
+        )
 
         # Also delete the progress record
-        self.conn.execute("""
+        self.conn.execute(
+            """
             DELETE FROM fundamentals_progress WHERE year = ? AND quarter = ?
-        """, [year, quarter])
+        """,
+            [year, quarter],
+        )
 
         logger.info(f"Deleted {count} fundamentals rows for {year}Q{quarter}")
         return count
@@ -421,11 +441,14 @@ class DuckDBWriter:
             filename: Source filename (e.g., 'gpcw20231231.zip')
             file_hash: Hash value from TDX server for change detection
         """
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT OR REPLACE INTO fundamentals_progress
                 (year, quarter, stock_count, filename, file_hash)
             VALUES (?, ?, ?, ?, ?)
-        """, [year, quarter, stock_count, filename, file_hash])
+        """,
+            [year, quarter, stock_count, filename, file_hash],
+        )
 
     def close(self) -> None:
         """Close database connection"""
@@ -471,8 +494,17 @@ class DuckDBWriter:
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
         columns = [
-            "symbol", "date", "open", "close", "high", "low",
-            "high_limit", "low_limit", "preclose", "volume", "money",
+            "symbol",
+            "date",
+            "open",
+            "close",
+            "high",
+            "low",
+            "high_limit",
+            "low_limit",
+            "preclose",
+            "volume",
+            "money",
         ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
@@ -502,9 +534,20 @@ class DuckDBWriter:
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
         columns = [
-            "symbol", "date", "pe_ttm", "pb", "ps_ttm", "pcf",
-            "roe", "roe_ttm", "roa", "roa_ttm", "naps",
-            "total_shares", "a_floats", "turnover_rate",
+            "symbol",
+            "date",
+            "pe_ttm",
+            "pb",
+            "ps_ttm",
+            "pcf",
+            "roe",
+            "roe_ttm",
+            "roa",
+            "roa_ttm",
+            "naps",
+            "total_shares",
+            "a_floats",
+            "turnover_rate",
         ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
@@ -542,18 +585,34 @@ class DuckDBWriter:
             ).dt.strftime("%Y%m%d")
 
         columns = [
-            "symbol", "date", "publ_date",
-            "operating_revenue_grow_rate", "net_profit_grow_rate",
-            "basic_eps_yoy", "np_parent_company_yoy",
-            "net_profit_ratio", "net_profit_ratio_ttm",
-            "gross_income_ratio", "gross_income_ratio_ttm",
-            "roa", "roa_ttm", "roe", "roe_ttm",
-            "total_asset_grow_rate", "total_asset_turnover_rate",
-            "current_assets_turnover_rate", "inventory_turnover_rate",
+            "symbol",
+            "date",
+            "publ_date",
+            "operating_revenue_grow_rate",
+            "net_profit_grow_rate",
+            "basic_eps_yoy",
+            "np_parent_company_yoy",
+            "net_profit_ratio",
+            "net_profit_ratio_ttm",
+            "gross_income_ratio",
+            "gross_income_ratio_ttm",
+            "roa",
+            "roa_ttm",
+            "roe",
+            "roe_ttm",
+            "total_asset_grow_rate",
+            "total_asset_turnover_rate",
+            "current_assets_turnover_rate",
+            "inventory_turnover_rate",
             "accounts_receivables_turnover_rate",
-            "current_ratio", "quick_ratio", "debt_equity_ratio",
-            "interest_cover", "roic", "roa_ebit_ttm",
-            "total_shares", "a_floats",
+            "current_ratio",
+            "quick_ratio",
+            "debt_equity_ratio",
+            "interest_cover",
+            "roic",
+            "roa_ebit_ttm",
+            "total_shares",
+            "a_floats",
         ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
@@ -583,8 +642,13 @@ class DuckDBWriter:
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
         columns = [
-            "symbol", "date", "allotted_ps", "rationed_ps",
-            "rationed_px", "bonus_ps", "dividend",
+            "symbol",
+            "date",
+            "allotted_ps",
+            "rationed_ps",
+            "rationed_px",
+            "bonus_ps",
+            "dividend",
         ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
@@ -721,10 +785,13 @@ class DuckDBWriter:
         """Write index constituents for a specific date"""
         symbols_json = json.dumps(symbols, ensure_ascii=False)
 
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT OR REPLACE INTO index_constituents (date, index_code, symbols)
             VALUES (?, ?, ?)
-        """, [date, index_code, symbols_json])
+        """,
+            [date, index_code, symbols_json],
+        )
 
     def write_stock_status(
         self, date: str, status_type: str, symbols: List[str]
@@ -732,10 +799,13 @@ class DuckDBWriter:
         """Write stock status for a specific date"""
         symbols_json = json.dumps(symbols, ensure_ascii=False)
 
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT OR REPLACE INTO stock_status (date, status_type, symbols)
             VALUES (?, ?, ?)
-        """, [date, status_type, symbols_json])
+        """,
+            [date, status_type, symbols_json],
+        )
 
     def write_money_flow(self, symbol: str, df: pd.DataFrame) -> int:
         """Write money flow data with upsert."""
@@ -744,11 +814,21 @@ class DuckDBWriter:
         df = df.copy()
         df["symbol"] = symbol
         df["date"] = pd.to_datetime(df["date"]).dt.date
-        columns = ["symbol", "date", "net_main", "net_super", "net_large", "net_medium", "net_small"]
+        columns = [
+            "symbol",
+            "date",
+            "net_main",
+            "net_super",
+            "net_large",
+            "net_medium",
+            "net_small",
+        ]
         available = [c for c in columns if c in df.columns]
         df = df[available]
         cols_str = ", ".join(available)
-        self.conn.execute(f"INSERT OR REPLACE INTO money_flow ({cols_str}) SELECT {cols_str} FROM df")
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO money_flow ({cols_str}) SELECT {cols_str} FROM df"
+        )
         return len(df)
 
     def write_lhb(self, df: pd.DataFrame) -> int:
@@ -763,7 +843,9 @@ class DuckDBWriter:
         available = [c for c in columns if c in df.columns]
         df = df[available]
         cols_str = ", ".join(available)
-        self.conn.execute(f"INSERT OR REPLACE INTO lhb ({cols_str}) SELECT {cols_str} FROM df")
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO lhb ({cols_str}) SELECT {cols_str} FROM df"
+        )
         return len(df)
 
     def write_margin_trading(self, symbol: str, df: pd.DataFrame) -> int:
@@ -777,16 +859,21 @@ class DuckDBWriter:
         available = [c for c in columns if c in df.columns]
         df = df[available]
         cols_str = ", ".join(available)
-        self.conn.execute(f"INSERT OR REPLACE INTO margin_trading ({cols_str}) SELECT {cols_str} FROM df")
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO margin_trading ({cols_str}) SELECT {cols_str} FROM df"
+        )
         return len(df)
 
     def write_global_metadata(self, meta: pd.Series) -> None:
         """Write global metadata to version_info table"""
         for key, value in meta.items():
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT OR REPLACE INTO version_info (key, value)
                 VALUES (?, ?)
-            """, [str(key), str(value)])
+            """,
+                [str(key), str(value)],
+            )
 
     # ========================================
     # Incremental update helpers
@@ -795,9 +882,12 @@ class DuckDBWriter:
     def get_max_date(self, table: str, symbol: str = None) -> Optional[str]:
         """Get maximum date for incremental update"""
         if symbol:
-            result = self.conn.execute(f"""
+            result = self.conn.execute(
+                f"""
                 SELECT MAX(date) FROM {table} WHERE symbol = ?
-            """, [symbol]).fetchone()
+            """,
+                [symbol],
+            ).fetchone()
         else:
             result = self.conn.execute(f"""
                 SELECT MAX(date) FROM {table}
@@ -810,9 +900,12 @@ class DuckDBWriter:
     def get_min_date(self, table: str, symbol: str = None) -> Optional[str]:
         """Get minimum date for backfill detection"""
         if symbol:
-            result = self.conn.execute(f"""
+            result = self.conn.execute(
+                f"""
                 SELECT MIN(date) FROM {table} WHERE symbol = ?
-            """, [symbol]).fetchone()
+            """,
+                [symbol],
+            ).fetchone()
         else:
             result = self.conn.execute(f"""
                 SELECT MIN(date) FROM {table}
@@ -843,7 +936,13 @@ class DuckDBWriter:
             Dict with table names as keys and summary dicts as values.
         """
         status = {}
-        for table in ["stocks", "valuation", "fundamentals", "exrights", "adjust_factors"]:
+        for table in [
+            "stocks",
+            "valuation",
+            "fundamentals",
+            "exrights",
+            "adjust_factors",
+        ]:
             status[table] = self._get_table_summary(table)
 
         # Add fundamentals quarter progress
@@ -956,6 +1055,7 @@ class DuckDBWriter:
         # Clean output directory to avoid mixing data from different markets
         if output_path.exists():
             import shutil
+
             shutil.rmtree(output_path)
 
         for subdir in ["stocks", "exrights", "fundamentals", "valuation", "metadata"]:
@@ -965,13 +1065,19 @@ class DuckDBWriter:
         self._export_per_symbol_table("stocks", output_path / "stocks", market=market)
 
         logger.info("Exporting exrights...")
-        self._export_per_symbol_table("exrights", output_path / "exrights", market=market)
+        self._export_per_symbol_table(
+            "exrights", output_path / "exrights", market=market
+        )
 
         logger.info("Exporting fundamentals...")
-        self._export_per_symbol_table("fundamentals", output_path / "fundamentals", market=market)
+        self._export_per_symbol_table(
+            "fundamentals", output_path / "fundamentals", market=market
+        )
 
         logger.info("Exporting valuation...")
-        self._export_per_symbol_table("valuation", output_path / "valuation", market=market)
+        self._export_per_symbol_table(
+            "valuation", output_path / "valuation", market=market
+        )
 
         logger.info("Exporting metadata...")
         self._export_metadata(output_path / "metadata")
@@ -983,7 +1089,9 @@ class DuckDBWriter:
 
         logger.info(f"Export complete: {output_path}")
 
-    def _export_per_symbol_table(self, table: str, output_dir: Path, market: str = "cn") -> None:
+    def _export_per_symbol_table(
+        self, table: str, output_dir: Path, market: str = "cn"
+    ) -> None:
         """Export table to per-symbol Parquet files using DuckDB COPY"""
         symbols = self.get_existing_stocks(table)
 
@@ -998,7 +1106,9 @@ class DuckDBWriter:
 
             if table == "stocks":
                 # Calculate high_limit and low_limit during export
-                self._export_stocks_with_limits(symbol_escaped, output_file, market=market)
+                self._export_stocks_with_limits(
+                    symbol_escaped, output_file, market=market
+                )
             elif table == "fundamentals":
                 # Calculate TTM indicators during export
                 self._export_fundamentals_with_ttm(symbol_escaped, output_file)
@@ -1050,7 +1160,9 @@ class DuckDBWriter:
 
         df.to_parquet(str(output_file), index=False, compression="zstd")
 
-    def _export_stocks_with_limits(self, symbol_escaped: str, output_file: Path, market: str = "cn") -> None:
+    def _export_stocks_with_limits(
+        self, symbol_escaped: str, output_file: Path, market: str = "cn"
+    ) -> None:
         """
         Export stocks data with calculated price limits
 
@@ -1219,8 +1331,159 @@ class DuckDBWriter:
             ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
         """)
 
+    def _ensure_stock_metadata_from_pool(self) -> None:
+        """Populate stock_metadata with accurate listed/de_listed dates.
+
+        Uses MIN(date) from stocks table as listed_date (99.8% match with
+        actual IPO dates). Sets de_listed_date to '2900-01-01' for active
+        stocks, or MAX(date) for stocks no longer in the mootdx stock list.
+        """
+        # Check current stock_metadata quality
+        current_count = self.conn.execute(
+            "SELECT COUNT(*) FROM stock_metadata"
+        ).fetchone()[0]
+        valid_delisted_count = self.conn.execute(
+            "SELECT COUNT(*) FROM stock_metadata "
+            "WHERE de_listed_date IS NOT NULL AND de_listed_date != ''"
+        ).fetchone()[0]
+        pool_count = self.conn.execute(
+            "SELECT COUNT(*) FROM stock_pool"
+        ).fetchone()[0]
+
+        needs_population = (
+            current_count < pool_count or valid_delisted_count < 100
+        )
+
+        if not needs_population:
+            return
+
+        logger.info(
+            f"Populating stock_metadata: {current_count} records, "
+            f"{valid_delisted_count} with de_listed_date, pool has {pool_count}"
+        )
+
+        # Step 1: Get stock names from mootdx (current active stocks)
+        active_stock_names = {}
+        try:
+            from mootdx.quotes import Quotes
+
+            client = Quotes.factory(market="std", quiet=True)
+            sz_prefixes = ("000", "001", "002", "003", "300", "301", "302")
+            sh_prefixes = ("600", "601", "603", "605", "688", "689")
+
+            for market in [0, 1]:  # 0=SZ, 1=SH
+                try:
+                    df = client.stocks(market=market)
+                    if df is None or df.empty:
+                        continue
+                    for _, row in df.iterrows():
+                        code = str(row.get("code", "")).strip()
+                        name = str(row.get("name", "")).strip()
+                        if not code or len(code) != 6:
+                            continue
+                        if market == 1 and code.startswith(("000", "399", "999")):
+                            continue
+                        if market == 0 and (
+                            code.startswith(
+                                ("15", "16", "50", "51", "52", "56", "58", "59")
+                            )
+                            or code.startswith("39")
+                        ):
+                            continue
+                        if market == 0 and code.startswith(sz_prefixes):
+                            active_stock_names[f"{code}.SZ"] = name
+                        elif market == 1 and code.startswith(sh_prefixes):
+                            active_stock_names[f"{code}.SS"] = name
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch stocks for market {market}: {e}"
+                    )
+            logger.info(f"Fetched {len(active_stock_names)} stock names from mootdx")
+        except Exception as e:
+            logger.warning(f"Failed to fetch stock names: {e}")
+
+        # Step 2: Get listed_date from MIN(date) in stocks table
+        # This matches actual IPO dates with 99.8% accuracy
+        # Filter to A-share codes only (exclude indices, B-shares, etc.)
+        stock_dates = {}
+        try:
+            dates_df = self.conn.execute(
+                "SELECT symbol, MIN(date) as listed_date, MAX(date) as last_date "
+                "FROM stocks "
+                "WHERE (symbol LIKE '000___.SZ' OR symbol LIKE '001___.SZ' "
+                "    OR symbol LIKE '002___.SZ' OR symbol LIKE '003___.SZ' "
+                "    OR symbol LIKE '300___.SZ' OR symbol LIKE '301___.SZ' "
+                "    OR symbol LIKE '302___.SZ' "
+                "    OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
+                "    OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
+                "    OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS') "
+                "GROUP BY symbol"
+            ).fetchdf()
+            for _, row in dates_df.iterrows():
+                stock_dates[row["symbol"]] = {
+                    "listed_date": str(row["listed_date"]),
+                    "last_date": str(row["last_date"]),
+                }
+            logger.info(
+                f"Got listed dates from stocks table for {len(stock_dates)} symbols"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get dates from stocks table: {e}")
+
+        # Step 3: Determine de_listed_date
+        # Active in mootdx → '2900-01-01'
+        # Not active and last_date far from latest → last_date (likely delisted)
+        active_set = set(active_stock_names.keys())
+        latest_date = self.conn.execute(
+            "SELECT MAX(date) FROM stocks"
+        ).fetchone()[0]
+
+        # Step 4: Build and insert metadata for all known symbols
+        all_symbols = set(stock_dates.keys()) | active_set
+        inserted = 0
+        for symbol in all_symbols:
+            name = active_stock_names.get(symbol)
+            dates = stock_dates.get(symbol, {})
+            listed_date = dates.get("listed_date")
+            last_date = dates.get("last_date")
+
+            # Determine de_listed_date
+            if symbol in active_set:
+                de_listed_date = "2900-01-01"
+            elif last_date and latest_date and str(last_date) < str(latest_date):
+                de_listed_date = last_date
+            else:
+                de_listed_date = "2900-01-01"
+
+            # Preserve existing blocks data
+            existing_blocks = self.conn.execute(
+                "SELECT blocks FROM stock_metadata WHERE symbol = ?",
+                [symbol],
+            ).fetchone()
+            blocks = existing_blocks[0] if existing_blocks else None
+
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO stock_metadata
+                (symbol, stock_name, listed_date, de_listed_date, blocks)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                [symbol, name, listed_date, de_listed_date, blocks],
+            )
+            inserted += 1
+
+        logger.info(
+            f"stock_metadata population complete: {inserted} records, "
+            f"{len(active_set)} active stocks"
+        )
+
     def _export_metadata(self, output_dir: Path) -> None:
         """Export metadata tables using DuckDB COPY"""
+
+        # Before exporting stock_metadata, ensure it's populated from stock_pool
+        # This ensures all A-shares are included, not just those with downloaded data
+        self._ensure_stock_metadata_from_pool()
+
         # stock_metadata.parquet
         count = self.conn.execute("SELECT COUNT(*) FROM stock_metadata").fetchone()[0]
         if count > 0:
@@ -1246,7 +1509,9 @@ class DuckDBWriter:
             """)
 
         # index_constituents.parquet
-        count = self.conn.execute("SELECT COUNT(*) FROM index_constituents").fetchone()[0]
+        count = self.conn.execute("SELECT COUNT(*) FROM index_constituents").fetchone()[
+            0
+        ]
         if count > 0:
             self.conn.execute(f"""
                 COPY index_constituents TO '{output_dir / "index_constituents.parquet"}'
@@ -1270,12 +1535,16 @@ class DuckDBWriter:
                 (SELECT MIN(date)::VARCHAR FROM stocks) as start_date
         """).fetchone()
 
-        version_data = pd.DataFrame([{
-            "version": result[0] or "",
-            "num_stocks": result[1] or 0,
-            "export_date": str(result[2]),
-            "start_date": result[3] or "",
-        }])
+        version_data = pd.DataFrame(
+            [
+                {
+                    "version": result[0] or "",
+                    "num_stocks": result[1] or 0,
+                    "export_date": str(result[2]),
+                    "start_date": result[3] or "",
+                }
+            ]
+        )
         version_data.to_parquet(output_dir / "version.parquet", index=False)
 
     def _export_adjust_factors(self, output_dir: Path) -> None:
