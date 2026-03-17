@@ -34,11 +34,19 @@ _LEGACY_DB = {
 
 
 def _resolve_db(market: str) -> str:
-    """Resolve DB path, auto-migrating legacy names."""
+    """Resolve DB path, preferring the one with actual data."""
     canonical = DB_PATHS[market]
+    # Check legacy names first — prefer the larger file (has actual data)
+    for legacy, target in _LEGACY_DB.items():
+        if target == canonical and Path(legacy).exists():
+            if not Path(canonical).exists():
+                return legacy
+            # Both exist: prefer larger file
+            if Path(legacy).stat().st_size > Path(canonical).stat().st_size:
+                return legacy
     if Path(canonical).exists():
         return canonical
-    # Check legacy names
+    return canonical
     for legacy, target in _LEGACY_DB.items():
         if target == canonical and Path(legacy).exists():
             return legacy

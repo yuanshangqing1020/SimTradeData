@@ -1115,8 +1115,8 @@ class DuckDBWriter:
             elif table == "valuation":
                 # Enrich with total_shares/a_floats from fundamentals
                 self._export_valuation_enriched(symbol_escaped, output_file)
-            elif table == "exrights" and market == "us":
-                self._export_exrights_us(symbol_escaped, output_file)
+            elif table == "exrights":
+                self._export_exrights_with_factors(symbol_escaped, output_file)
             else:
                 self.conn.execute(f"""
                     COPY (
@@ -1128,8 +1128,8 @@ class DuckDBWriter:
 
         logger.info(f"Exported {len(symbols)} {table} files")
 
-    def _export_exrights_us(self, symbol_escaped: str, output_file: Path) -> None:
-        """Export US exrights with computed exer_forward_a/b factors"""
+    def _export_exrights_with_factors(self, symbol_escaped: str, output_file: Path) -> None:
+        """Export exrights with computed exer_forward_a/b factors"""
         import numpy as np
 
         df = self.conn.execute(f"""
@@ -1524,7 +1524,10 @@ class DuckDBWriter:
         ]
         if count > 0:
             self.conn.execute(f"""
-                COPY index_constituents TO '{output_dir / "index_constituents.parquet"}'
+                COPY (
+                    SELECT date, index_code, symbols::JSON::VARCHAR[] AS symbols
+                    FROM index_constituents
+                ) TO '{output_dir / "index_constituents.parquet"}'
                 (FORMAT PARQUET, CODEC 'ZSTD')
             """)
 
@@ -1532,7 +1535,10 @@ class DuckDBWriter:
         count = self.conn.execute("SELECT COUNT(*) FROM stock_status").fetchone()[0]
         if count > 0:
             self.conn.execute(f"""
-                COPY stock_status TO '{output_dir / "stock_status.parquet"}'
+                COPY (
+                    SELECT date, status_type, symbols::JSON::VARCHAR[] AS symbols
+                    FROM stock_status
+                ) TO '{output_dir / "stock_status.parquet"}'
                 (FORMAT PARQUET, CODEC 'ZSTD')
             """)
 
