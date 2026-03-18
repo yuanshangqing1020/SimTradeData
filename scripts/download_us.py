@@ -182,13 +182,6 @@ class USDownloader:
 
                     self.writer.write_market_data(sym, df)
 
-                    # Write adjust factors
-                    if sym in adj_data and not adj_data[sym].empty:
-                        adj_df = adj_data[sym]
-                        adj_df = adj_df[adj_df["date"] >= pd.Timestamp(sym_start)]
-                        if not adj_df.empty:
-                            self.writer.write_adjust_factor(sym, adj_df)
-
                     success += 1
                 except Exception as e:
                     logger.warning(f"Failed to write OHLCV for {sym}: {e}")

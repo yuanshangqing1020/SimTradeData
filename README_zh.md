@@ -33,8 +33,7 @@
 - **市场数据**: OHLCV 日线数据，含涨跌停价、前收盘价
 - **估值指标**: PE/PB/PS/PCF/换手率/总股本/流通股
 - **财务数据**: 23个季度财务指标 + TTM指标自动计算
-- **除权除息**: 分红、送股、配股数据
-- **复权因子**: 前复权/后复权因子
+- **除权除息**: 分红、送股、配股数据（含前复权因子）
 - **元数据**: 股票信息、交易日历、指数成分股、ST/停牌状态
 - **美股支持**: 6000+ 美股普通股，S&P 500 / NASDAQ-100 指数成分股
 
@@ -58,8 +57,6 @@ data/
     │   ├── fundamentals/        # 季度财务数据（含TTM）
     │   ├── valuation/           # 估值指标（日频）
     │   ├── metadata/            # 元数据
-    │   ├── ptrade_adj_pre.parquet
-    │   ├── ptrade_adj_post.parquet
     │   └── manifest.json
     └── us/                      # 美股导出
         ├── stocks/
@@ -69,8 +66,6 @@ data/
         ├── fundamentals/
         ├── valuation/
         ├── metadata/
-        ├── ptrade_adj_pre.parquet
-        ├── ptrade_adj_post.parquet
         └── manifest.json
 ```
 
@@ -117,11 +112,11 @@ poetry shell
 
 ```bash
 # 完整下载（推荐）
-# Mootdx: 行情、复权因子、除权除息、批量财务、交易日历、基准指数
+# Mootdx: 行情、除权除息、批量财务、交易日历、基准指数
 # BaoStock: 估值指标、ST/停牌状态、指数成分股
 poetry run python scripts/download.py
 
-# 首次下载加速：先导入 TDX 日线包，再补充复权因子等
+# 首次下载加速：先导入 TDX 日线包，再补充除权除息等
 # （6000+ 只股票的 OHLCV 从数小时缩短到几分钟）
 poetry run python scripts/download.py --tdx-download --source mootdx --skip-fundamentals
 
@@ -147,7 +142,6 @@ poetry run python scripts/download.py --source baostock
 |---------|-----------|------|
 | 行情 OHLCV（首次） | TDX 日线包 | 最快，~500MB 一次性导入全部历史 |
 | 行情 OHLCV（增量） | Mootdx | 速度快，本地网络 |
-| 复权因子 | Mootdx | 随行情一起下载 |
 | 除权除息 (XDXR) | Mootdx | 数据更完整 |
 | 批量财务数据 | Mootdx | 一个ZIP=所有股票，远优于逐股查询 |
 | 估值 PE/PB/PS/换手率 | BaoStock | 独有数据 |
@@ -434,7 +428,7 @@ poetry run python scripts/test_smart_router_live.py
 - 新增 SmartRouter 统一数据访问层
 - 自动根据数据类型和市场选择最佳数据源
 - 静态优先级 + 熔断器健康感知，主源失败自动 fallback
-- 支持 13 种数据类型：日线、复权因子、XDXR、财务、估值、资金流向、龙虎榜、融资融券等
+- 支持 13 种数据类型：日线、XDXR、财务、估值、资金流向、龙虎榜、融资融券等
 - 新增 EastMoney 数据源作为 A 股日线 fallback
 - 输出列标准化：无论使用哪个数据源，返回一致的列结构
 
@@ -443,8 +437,8 @@ poetry run python scripts/test_smart_router_live.py
 - 新增 `--tdx-source` 参数：从本地 ZIP 文件或目录导入 TDX 日线数据
 - 首次下载 6000+ 只股票 OHLCV 从数小时缩短到几分钟
 - TDX 导入作为 Phase 0 在 Mootdx 阶段之前自动执行
-- 修复 TDX 导入后复权因子和除权除息无法补充下载的问题
-- 复权因子和除权除息改为按个股检查是否缺失，独立于 OHLCV 增量逻辑
+- 修复 TDX 导入后除权除息无法补充下载的问题
+- 除权除息改为按个股检查是否缺失，独立于 OHLCV 增量逻辑
 
 ### v0.6.0 (2026-02-08) - 美股数据支持
 - 新增 yfinance 数据源，支持 6000+ 只美股普通股

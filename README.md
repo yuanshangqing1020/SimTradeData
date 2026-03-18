@@ -33,8 +33,7 @@ English | [中文](README_zh.md)
 - **Market Data**: OHLCV daily bars with limit-up/down prices and previous close
 - **Valuation Metrics**: PE/PB/PS/PCF/Turnover Rate/Total Shares/Float Shares
 - **Financial Data**: 23 quarterly financial indicators + automatic TTM calculation
-- **Corporate Actions**: Dividends, bonus shares, rights offerings
-- **Adjustment Factors**: Forward and backward adjustment factors
+- **Corporate Actions**: Dividends, bonus shares, rights offerings (with forward adjustment factors)
 - **Metadata**: Stock info, trading calendar, index constituents, ST/suspension status
 - **US Stock Support**: 6,000+ US common stocks, S&P 500 / NASDAQ-100 index constituents
 
@@ -58,8 +57,6 @@ data/
     │   ├── fundamentals/        # Quarterly financials (with TTM)
     │   ├── valuation/           # Valuation metrics (daily)
     │   ├── metadata/            # Metadata
-    │   ├── ptrade_adj_pre.parquet
-    │   ├── ptrade_adj_post.parquet
     │   └── manifest.json
     └── us/                      # US stocks export
         ├── stocks/
@@ -69,8 +66,6 @@ data/
         ├── fundamentals/
         ├── valuation/
         ├── metadata/
-        ├── ptrade_adj_pre.parquet
-        ├── ptrade_adj_post.parquet
         └── manifest.json
 ```
 
@@ -117,11 +112,11 @@ A single command downloads all data, automatically orchestrating Mootdx and BaoS
 
 ```bash
 # Full download (recommended)
-# Mootdx: market data, adjustment factors, corporate actions, bulk financials, trading calendar, benchmark index
+# Mootdx: market data, corporate actions, bulk financials, trading calendar, benchmark index
 # BaoStock: valuation metrics, ST/suspension status, index constituents
 poetry run python scripts/download.py
 
-# Fast first-time download: import TDX daily package first, then supplement with adjustment factors etc.
+# Fast first-time download: import TDX daily package first, then supplement with corporate actions etc.
 # (6,000+ stocks OHLCV reduced from hours to minutes)
 poetry run python scripts/download.py --tdx-download --source mootdx --skip-fundamentals
 
@@ -147,7 +142,6 @@ poetry run python scripts/download.py --source baostock
 |-----------|--------|--------|
 | OHLCV Market Data (first time) | TDX Daily Package | Fastest, ~500MB bulk import of full history |
 | OHLCV Market Data (incremental) | Mootdx | Fast, local network |
-| Adjustment Factors | Mootdx | Downloaded with market data |
 | Corporate Actions (XDXR) | Mootdx | More complete data |
 | Bulk Financial Data | Mootdx | One ZIP = all stocks, far better than per-stock queries |
 | Valuation PE/PB/PS/Turnover | BaoStock | Exclusive data |
@@ -439,7 +433,7 @@ poetry run python scripts/test_smart_router_live.py
 - Added SmartRouter unified data access layer
 - Auto-selects best data source by data type and market
 - Static priority + circuit breaker health-aware, auto fallback on failure
-- Supports 13 data types: daily bars, adjust factors, XDXR, fundamentals, valuation, money flow, LHB, margin trading, etc.
+- Supports 13 data types: daily bars, XDXR, fundamentals, valuation, money flow, LHB, margin trading, etc.
 - Added EastMoney as A-share daily bars fallback source
 - Output column normalization: consistent column structure regardless of source
 
@@ -448,8 +442,8 @@ poetry run python scripts/test_smart_router_live.py
 - Added `--tdx-source` flag: import TDX daily data from local ZIP file or directory
 - First-time download of 6,000+ stocks OHLCV reduced from hours to minutes
 - TDX import runs as Phase 0 before Mootdx phase
-- Fixed adjust factors and XDXR not being downloaded after TDX bulk import
-- Adjust factors and XDXR now check per-symbol existence independently of OHLCV incremental logic
+- Fixed corporate actions not being downloaded after TDX bulk import
+- Corporate actions now check per-symbol existence independently of OHLCV incremental logic
 
 ### v0.6.0 (2026-02-08) - US Stock Support
 - Added yfinance data source supporting 6,000+ US common stocks

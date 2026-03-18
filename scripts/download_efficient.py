@@ -175,16 +175,6 @@ class EfficientBaoStockDownloader:
             if "status" in split_data:
                 self.status_cache[symbol] = split_data["status"]
 
-            # Download adjust factor
-            try:
-                adj_factor = self.standard_fetcher.fetch_adjust_factor(
-                    symbol, start_date, end_date
-                )
-                if not adj_factor.empty:
-                    adj_series = adj_factor.set_index("date")["backAdjustFactor"]
-                    self.writer.write_adjust_factor(symbol, adj_series)
-            except Exception as e:
-                logger.warning(f"Failed to fetch adjust factor for {symbol}: {e}")
 
             # Download dividend (ex-rights) data
             try:

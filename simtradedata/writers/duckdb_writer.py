@@ -133,15 +133,6 @@ class DuckDBWriter:
             )
         """)
 
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS adjust_factors (
-                symbol VARCHAR NOT NULL,
-                date DATE NOT NULL,
-                adj_a DOUBLE NOT NULL,
-                adj_b DOUBLE DEFAULT 0,
-                PRIMARY KEY (symbol, date)
-            )
-        """)
 
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS stock_metadata (
@@ -665,40 +656,8 @@ class DuckDBWriter:
         return len(df)
 
     def write_adjust_factor(self, symbol: str, data) -> int:
-        """Write adjust factors with upsert"""
-        if isinstance(data, pd.Series):
-            df = data.reset_index()
-            df.columns = ["date", "adj_a"]
-        elif isinstance(data, pd.DataFrame):
-            df = data.copy()
-            if isinstance(df.index, pd.DatetimeIndex):
-                df = df.reset_index()
-                if "index" in df.columns:
-                    df = df.rename(columns={"index": "date"})
-        else:
-            return 0
-
-        if df.empty:
-            return 0
-
-        df["symbol"] = symbol
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-
-        if "backAdjustFactor" in df.columns:
-            df["adj_a"] = df["backAdjustFactor"]
-
-        if "adj_b" not in df.columns:
-            df["adj_b"] = 0.0
-
-        df = df[["symbol", "date", "adj_a", "adj_b"]]
-
-        self.conn.execute("""
-            INSERT OR REPLACE INTO adjust_factors
-            SELECT * FROM df
-        """)
-
-        logger.debug(f"Wrote {len(df)} adjust factor rows for {symbol}")
-        return len(df)
+        """Deprecated: adjust factors removed. SimTradeLab computes from exrights."""
+        return 0
 
     def write_benchmark(self, df: pd.DataFrame) -> int:
         """Write benchmark index data"""
@@ -943,7 +902,6 @@ class DuckDBWriter:
             "valuation",
             "fundamentals",
             "exrights",
-            "adjust_factors",
         ]:
             status[table] = self._get_table_summary(table)
 
@@ -1083,9 +1041,6 @@ class DuckDBWriter:
 
         logger.info("Exporting metadata...")
         self._export_metadata(output_path / "metadata")
-
-        logger.info("Exporting adjust factors...")
-        self._export_adjust_factors(output_path)
 
         self._write_manifest(output_path)
 
@@ -1565,30 +1520,6 @@ class DuckDBWriter:
         )
         version_data.to_parquet(output_dir / "version.parquet", index=False)
 
-    def _export_adjust_factors(self, output_dir: Path) -> None:
-        """Export adjust factors to pre/post files using DuckDB COPY"""
-        count = self.conn.execute("SELECT COUNT(*) FROM adjust_factors").fetchone()[0]
-        if count == 0:
-            logger.info("No adjust factors to export")
-            return
-
-        # ptrade_adj_pre.parquet (backward adjust = pre-adjust)
-        self.conn.execute(f"""
-            COPY (
-                SELECT date, symbol, adj_a, adj_b
-                FROM adjust_factors
-                ORDER BY date, symbol
-            ) TO '{output_dir / "ptrade_adj_pre.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
-        """)
-
-        # ptrade_adj_post.parquet (same data for now)
-        self.conn.execute(f"""
-            COPY (
-                SELECT date, symbol, adj_a, adj_b
-                FROM adjust_factors
-                ORDER BY date, symbol
-            ) TO '{output_dir / "ptrade_adj_post.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
-        """)
 
     def _write_manifest(self, output_dir: Path) -> None:
         """Write manifest.json"""

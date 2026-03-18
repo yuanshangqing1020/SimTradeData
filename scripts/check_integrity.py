@@ -74,7 +74,7 @@ def check_integrity(db_path: str = DB_PATH) -> dict:
     # --- Per-table coverage ---
     print("\n--- Coverage vs Stock Pool ---")
     coverage = {}
-    data_tables = ["stocks", "valuation", "adjust_factors", "exrights"]
+    data_tables = ["stocks", "valuation", "exrights"]
     for table in data_tables:
         if table not in table_info:
             continue

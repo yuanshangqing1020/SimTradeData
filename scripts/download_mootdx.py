@@ -184,23 +184,6 @@ class MootdxDownloader:
                         self.writer.write_market_data(symbol, market_df)
                         downloaded = True
 
-            # --- Adjust factor: download if missing for this symbol ---
-            if not self.writer.get_max_date("adjust_factors", symbol):
-                try:
-                    adj_df = self.unified_fetcher.fetch_adjust_factor(
-                        symbol, start_date, end_date
-                    )
-                    if not adj_df.empty:
-                        adj_series = adj_df.set_index("date")["backAdjustFactor"]
-                        self.writer.write_adjust_factor(symbol, adj_series)
-                        downloaded = True
-                except (socket.timeout, ConnectionError):
-                    logger.warning(f"Connection error fetching adjust factor for {symbol}, reconnecting")
-                    self._reconnect()
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch adjust factor for {symbol}: {e}"
-                    )
 
             # --- XDXR: download if missing for this symbol ---
             if not self.writer.get_max_date("exrights", symbol):
@@ -521,35 +504,33 @@ def download_all_data(
                     test_df = pd.DataFrame()
 
                 if test_df.empty:
-                    # OHLCV is current (or test fetch failed), check extras coverage
+                    # OHLCV is current (or test fetch failed), check exrights coverage
                     stock_count = downloader.writer.conn.execute(
                         "SELECT COUNT(DISTINCT symbol) FROM stocks"
                     ).fetchone()[0]
-                    adj_count = downloader.writer.conn.execute(
-                        "SELECT COUNT(DISTINCT symbol) FROM adjust_factors"
+                    exr_count = downloader.writer.conn.execute(
+                        "SELECT COUNT(DISTINCT symbol) FROM exrights"
                     ).fetchone()[0]
 
-                    if adj_count >= stock_count * 0.9:
+                    if exr_count >= stock_count * 0.9:
                         print(f"\nStocks data already up to date (max_date: {global_max_date})")
-                        print(f"Adjust factors coverage: {adj_count}/{stock_count} stocks")
+                        print(f"Exrights coverage: {exr_count}/{stock_count} stocks")
                         print("No new trading days since last update, skipping stock download.")
                         skip_stock_download = True
                     else:
-                        # Only process stocks missing adjust factors or exrights
+                        # Only process stocks missing exrights
                         missing = downloader.writer.conn.execute("""
                             SELECT DISTINCT s.symbol FROM stocks s
-                            LEFT JOIN (SELECT DISTINCT symbol FROM adjust_factors) a
-                                ON s.symbol = a.symbol
                             LEFT JOIN (SELECT DISTINCT symbol FROM exrights) x
                                 ON s.symbol = x.symbol
-                            WHERE a.symbol IS NULL OR x.symbol IS NULL
+                            WHERE x.symbol IS NULL
                         """).fetchall()
                         extras_stock_pool = [row[0] for row in missing]
                         from simtradedata.utils.code_utils import is_etf_code
                         etf_count = sum(1 for s in extras_stock_pool if is_etf_code(s))
                         print(f"\nOHLCV up to date (max_date: {global_max_date})")
                         print(
-                            f"But adjust factors incomplete ({adj_count}/{stock_count}), "
+                            f"But exrights incomplete ({exr_count}/{stock_count}), "
                             f"downloading extras..."
                         )
                         print(f"  Missing: {len(extras_stock_pool)} "

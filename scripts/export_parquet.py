@@ -81,11 +81,6 @@ def export_to_parquet(db_path: str, output_dir: str, market: str = "cn") -> None
         print(f"  valuation/:    {count_files('valuation'):>5} files, {get_dir_size('valuation'):>8.1f} MB")
         print(f"  metadata/:     {count_files('metadata'):>5} files, {get_dir_size('metadata'):>8.1f} MB")
 
-        for name in ["ptrade_adj_pre.parquet", "ptrade_adj_post.parquet"]:
-            f = output_path / name
-            if f.exists():
-                print(f"  {name}: {f.stat().st_size / (1024*1024):.1f} MB")
-
         print(f"\nDone! → {output_dir}")
 
     finally:
