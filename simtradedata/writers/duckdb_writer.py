@@ -1022,28 +1022,16 @@ class DuckDBWriter:
             (output_path / subdir).mkdir(parents=True, exist_ok=True)
 
         logger.info("Exporting stocks...")
-        # Pre-compute trading calendar once for suspension-day fill
-        self.conn.execute(
-            "CREATE OR REPLACE TEMP TABLE _trade_cal AS "
-            "SELECT DISTINCT date FROM stocks"
-        )
-        self._export_per_symbol_table("stocks", output_path / "stocks", market=market)
-        self.conn.execute("DROP TABLE IF EXISTS _trade_cal")
+        self._export_stocks_batch(output_path / "stocks", market=market)
 
         logger.info("Exporting exrights...")
-        self._export_per_symbol_table(
-            "exrights", output_path / "exrights", market=market
-        )
+        self._export_exrights_batch(output_path / "exrights")
 
         logger.info("Exporting fundamentals...")
-        self._export_per_symbol_table(
-            "fundamentals", output_path / "fundamentals", market=market
-        )
+        self._export_fundamentals_batch(output_path / "fundamentals")
 
         logger.info("Exporting valuation...")
-        self._export_per_symbol_table(
-            "valuation", output_path / "valuation", market=market
-        )
+        self._export_valuation_batch(output_path / "valuation")
 
         logger.info("Exporting metadata...")
         self._export_metadata(output_path / "metadata")
@@ -1122,6 +1110,237 @@ class DuckDBWriter:
         df["exer_forward_b"] = fb[:n]
 
         df.to_parquet(str(output_file), index=False, compression="zstd")
+
+    def _export_exrights_batch(self, output_dir: Path) -> None:
+        """Export all exrights with pre-computed forward adj factors (batch)."""
+        import time
+        import numpy as np
+        t0 = time.time()
+
+        df_all = self.conn.execute("""
+            SELECT symbol, date::TIMESTAMP_NS AS date,
+                   allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend
+            FROM exrights ORDER BY symbol, date
+        """).fetchdf()
+
+        if df_all.empty:
+            logger.info("No exrights data to export")
+            return
+
+        count = 0
+        for symbol, group in df_all.groupby("symbol"):
+            df = group.drop(columns=["symbol"]).reset_index(drop=True)
+            n = len(df)
+            allotted = df["allotted_ps"].values
+            bonus = df["bonus_ps"].values
+            rationed = df["rationed_ps"].values
+            rationed_px = df["rationed_px"].values
+
+            fa = np.ones(n + 1, dtype="float64")
+            fb = np.zeros(n + 1, dtype="float64")
+            for i in range(n - 1, -1, -1):
+                m = 1.0 + allotted[i] + rationed[i]
+                fa[i] = fa[i + 1] / m
+                fb[i] = (fb[i + 1] - bonus[i] + rationed[i] * rationed_px[i]) / m
+
+            df["exer_forward_a"] = fa[:n]
+            df["exer_forward_b"] = fb[:n]
+            df.to_parquet(str(output_dir / f"{symbol}.parquet"), index=False, compression="zstd")
+            count += 1
+
+        logger.info(f"Exported {count} exrights files in {time.time() - t0:.1f}s")
+
+    def _export_fundamentals_batch(self, output_dir: Path) -> None:
+        """Export all fundamentals with TTM ratios (batch via temp table)."""
+        import time
+        t0 = time.time()
+
+        self.conn.execute("""
+            CREATE OR REPLACE TEMP TABLE _fundamentals_export AS
+            SELECT
+                symbol,
+                date::TIMESTAMP_NS AS date, publ_date,
+                operating_revenue_grow_rate, net_profit_grow_rate,
+                basic_eps_yoy, np_parent_company_yoy,
+                net_profit_ratio,
+                AVG(net_profit_ratio) OVER (
+                    PARTITION BY symbol ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                ) AS net_profit_ratio_ttm,
+                gross_income_ratio,
+                AVG(gross_income_ratio) OVER (
+                    PARTITION BY symbol ORDER BY date ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                ) AS gross_income_ratio_ttm,
+                roa, roa_ttm,
+                roe, roe_ttm,
+                total_asset_grow_rate, total_asset_turnover_rate,
+                current_assets_turnover_rate, inventory_turnover_rate,
+                accounts_receivables_turnover_rate,
+                current_ratio, quick_ratio, debt_equity_ratio,
+                interest_cover, roic, roa_ebit_ttm,
+                total_shares, a_floats
+            FROM fundamentals
+        """)
+
+        symbols = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT symbol FROM _fundamentals_export ORDER BY symbol"
+        ).fetchall()]
+
+        for symbol in symbols:
+            se = symbol.replace("'", "''")
+            self.conn.execute(f"""
+                COPY (
+                    SELECT * EXCLUDE (symbol) FROM _fundamentals_export
+                    WHERE symbol = '{se}' ORDER BY date
+                ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+            """)
+
+        self.conn.execute("DROP TABLE IF EXISTS _fundamentals_export")
+        logger.info(f"Exported {len(symbols)} fundamentals files in {time.time() - t0:.1f}s")
+
+    def _export_valuation_batch(self, output_dir: Path) -> None:
+        """Export all valuation data enriched with fundamentals (batch via temp table).
+
+        Uses ASOF JOIN to efficiently pick the most recent fundamentals record
+        for each valuation row, avoiding expensive window-function gap-filling.
+        """
+        import time
+        t0 = time.time()
+
+        self.conn.execute("""
+            CREATE OR REPLACE TEMP TABLE _valuation_export AS
+            SELECT
+                v.symbol,
+                v.date::TIMESTAMP_NS AS date,
+                v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
+                f.roe, f.roe_ttm, f.roa, f.roa_ttm,
+                CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END AS naps,
+                f.total_shares, f.a_floats,
+                v.turnover_rate
+            FROM valuation v
+            ASOF JOIN (SELECT symbol, date, close FROM stocks) s
+                ON v.symbol = s.symbol AND v.date >= s.date
+            ASOF JOIN fundamentals f
+                ON v.symbol = f.symbol AND v.date >= f.date
+        """)
+
+        symbols = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT symbol FROM _valuation_export ORDER BY symbol"
+        ).fetchall()]
+
+        for symbol in symbols:
+            se = symbol.replace("'", "''")
+            self.conn.execute(f"""
+                COPY (
+                    SELECT * EXCLUDE (symbol) FROM _valuation_export
+                    WHERE symbol = '{se}' ORDER BY date
+                ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+            """)
+
+        self.conn.execute("DROP TABLE IF EXISTS _valuation_export")
+        logger.info(f"Exported {len(symbols)} valuation files in {time.time() - t0:.1f}s")
+
+    def _export_stocks_batch(self, output_dir: Path, market: str = "cn") -> None:
+        """Export all stocks with gap-filling and price limits (batch optimized).
+
+        Pre-computes gap-filled data for ALL stocks in one query,
+        then writes per-symbol parquet files with a simple filter.
+        """
+        import time
+        t0 = time.time()
+
+        # Step 1: Build gap-filled table for all stocks at once
+        logger.info("  Pre-computing gap-filled data for all stocks...")
+        self.conn.execute("""
+            CREATE OR REPLACE TEMP TABLE _stocks_filled AS
+            WITH trade_cal AS (
+                SELECT DISTINCT date FROM stocks
+            ),
+            lifespans AS (
+                SELECT symbol, MIN(date) AS first_date, MAX(date) AS last_date
+                FROM stocks GROUP BY symbol
+            ),
+            joined AS (
+                SELECT
+                    ls.symbol,
+                    tc.date,
+                    s.open, s.close, s.high, s.low, s.preclose,
+                    COALESCE(s.volume, 0) AS volume,
+                    COALESCE(s.money, 0.0) AS money
+                FROM lifespans ls
+                CROSS JOIN trade_cal tc
+                LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = tc.date
+                WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
+            ),
+            gap_filled AS (
+                SELECT
+                    symbol, date,
+                    COALESCE(open, last_value(close IGNORE NULLS) OVER w) AS open,
+                    COALESCE(close, last_value(close IGNORE NULLS) OVER w) AS close,
+                    COALESCE(high, last_value(close IGNORE NULLS) OVER w) AS high,
+                    COALESCE(low, last_value(close IGNORE NULLS) OVER w) AS low,
+                    preclose, volume, money
+                FROM joined
+                WINDOW w AS (PARTITION BY symbol ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            )
+            SELECT
+                symbol,
+                date::TIMESTAMP_NS AS date,
+                open, close, high, low,
+                COALESCE(preclose, LAG(close) OVER (PARTITION BY symbol ORDER BY date)) AS preclose,
+                volume, money
+            FROM gap_filled
+        """)
+        t1 = time.time()
+        row_count = self.conn.execute("SELECT COUNT(*) FROM _stocks_filled").fetchone()[0]
+        logger.info(f"  Gap-fill complete: {row_count} rows in {t1 - t0:.1f}s")
+
+        # Step 2: Write per-symbol parquet files with price limits
+        symbols = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT symbol FROM _stocks_filled ORDER BY symbol"
+        ).fetchall()]
+
+        if market == "us":
+            for symbol in symbols:
+                se = symbol.replace("'", "''")
+                self.conn.execute(f"""
+                    COPY (
+                        SELECT date, open, close, high, low,
+                            NULL AS high_limit, NULL AS low_limit,
+                            preclose, volume, money
+                        FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
+                    ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
+                """)
+        else:
+            for symbol in symbols:
+                se = symbol.replace("'", "''")
+                output_file = output_dir / f"{symbol}.parquet"
+                code_prefix = symbol[:3]
+                is_chinext_star = code_prefix in ("300", "301", "688", "689")
+
+                if is_chinext_star:
+                    limit_sql = """
+                        CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 1.20, 2)
+                             ELSE ROUND(preclose * 1.10, 2) END AS high_limit,
+                        CASE WHEN date >= '2020-08-24' THEN ROUND(preclose * 0.80, 2)
+                             ELSE ROUND(preclose * 0.90, 2) END AS low_limit,
+                    """
+                else:
+                    limit_sql = """
+                        ROUND(preclose * 1.10, 2) AS high_limit,
+                        ROUND(preclose * 0.90, 2) AS low_limit,
+                    """
+
+                self.conn.execute(f"""
+                    COPY (
+                        SELECT date, open, close, high, low,
+                            {limit_sql}
+                            preclose, volume, money
+                        FROM _stocks_filled WHERE symbol = '{se}' ORDER BY date
+                    ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
+                """)
+
+        self.conn.execute("DROP TABLE IF EXISTS _stocks_filled")
+        logger.info(f"Exported {len(symbols)} stocks files in {time.time() - t0:.1f}s")
 
     def _export_stocks_with_limits(
         self, symbol_escaped: str, output_file: Path, market: str = "cn"

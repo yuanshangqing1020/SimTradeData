@@ -216,6 +216,19 @@ class MootdxDownloader:
         """
         Convert mootdx XDXR data to PTrade exrights format.
 
+        mootdx XDXR fields (per 10 shares):
+          songzhuangu = bonus + conversion shares
+          peigu       = rights issue shares
+          peigujia    = rights issue price (per share, NOT per 10)
+          fenhong     = cash dividend
+
+        PTrade exrights fields (per share):
+          allotted_ps = songzhuangu / 10
+          rationed_ps = peigu / 10
+          rationed_px = peigujia (already per share)
+          bonus_ps    = fenhong / 10
+          dividend    = fenhong / 10
+
         Args:
             xdxr_df: Raw XDXR DataFrame from mootdx
 
@@ -235,36 +248,39 @@ class MootdxDownloader:
 
         result = pd.DataFrame()
 
-        # Map XDXR fields to PTrade exrights format
-        if "datetime" in xdxr_df.columns:
+        # Construct date from year/month/day columns (mootdx format)
+        if "year" in xdxr_df.columns and "month" in xdxr_df.columns and "day" in xdxr_df.columns:
+            result["date"] = pd.to_datetime(
+                xdxr_df[["year", "month", "day"]].astype(int)
+            )
+        elif "datetime" in xdxr_df.columns:
             result["date"] = pd.to_datetime(xdxr_df["datetime"])
         elif "date" in xdxr_df.columns:
             result["date"] = pd.to_datetime(xdxr_df["date"])
         else:
             return pd.DataFrame()
 
-        # Song gu (bonus shares per share)
-        result["bonus_ps"] = pd.to_numeric(
-            xdxr_df.get("songzhuangu", 0), errors="coerce"
-        ).fillna(0.0)
+        # Allotted shares per share (songzhuangu / 10)
+        result["allotted_ps"] = (
+            pd.to_numeric(xdxr_df.get("songzhuangu", 0), errors="coerce").fillna(0.0) / 10.0
+        )
 
-        # Pei gu (rationed shares per share)
-        result["rationed_ps"] = pd.to_numeric(
-            xdxr_df.get("peigu", 0), errors="coerce"
-        ).fillna(0.0)
+        # Rationed shares per share (peigu / 10)
+        result["rationed_ps"] = (
+            pd.to_numeric(xdxr_df.get("peigu", 0), errors="coerce").fillna(0.0) / 10.0
+        )
 
-        # Pei gu price
+        # Rationed price (already per share)
         result["rationed_px"] = pd.to_numeric(
             xdxr_df.get("peigujia", 0), errors="coerce"
         ).fillna(0.0)
 
-        # Cash dividend (per share, before tax)
-        result["dividend"] = pd.to_numeric(
-            xdxr_df.get("fenhong", 0), errors="coerce"
-        ).fillna(0.0)
-
-        # Allotted shares (not directly available from mootdx)
-        result["allotted_ps"] = 0.0
+        # Cash dividend per share (fenhong / 10)
+        fenhong_ps = (
+            pd.to_numeric(xdxr_df.get("fenhong", 0), errors="coerce").fillna(0.0) / 10.0
+        )
+        result["bonus_ps"] = fenhong_ps
+        result["dividend"] = fenhong_ps
 
         return result
 
