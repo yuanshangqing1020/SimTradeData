@@ -1503,56 +1503,21 @@ class DuckDBWriter:
         """
         self.conn.execute(f"""
             COPY (
-                WITH daily_data AS (
-                    SELECT
-                        v.date::TIMESTAMP_NS AS date,
-                        v.pe_ttm,
-                        v.pb,
-                        v.ps_ttm,
-                        v.pcf,
-                        v.turnover_rate,
-                        s.close
-                    FROM valuation v
-                    LEFT JOIN stocks s ON v.symbol = s.symbol AND v.date = s.date
-                    WHERE v.symbol = '{symbol_escaped}'
-                ),
-                quarterly_data AS (
-                    SELECT
-                        date,
-                        roe, roa, roe_ttm, roa_ttm,
-                        total_shares, a_floats
-                    FROM fundamentals
-                    WHERE symbol = '{symbol_escaped}'
-                ),
-                combined AS (
-                    SELECT
-                        d.date,
-                        d.pe_ttm, d.pb, d.ps_ttm, d.pcf,
-                        d.turnover_rate,
-                        d.close,
-                        q.roe AS q_roe,
-                        q.roa AS q_roa,
-                        q.roe_ttm AS q_roe_ttm,
-                        q.roa_ttm AS q_roa_ttm,
-                        q.total_shares AS q_total_shares,
-                        q.a_floats AS q_a_floats
-                    FROM daily_data d
-                    LEFT JOIN quarterly_data q ON d.date = q.date
-                )
                 SELECT
-                    date,
-                    pe_ttm, pb, ps_ttm, pcf,
-                    LAST_VALUE(q_roe IGNORE NULLS) OVER w AS roe,
-                    LAST_VALUE(q_roe_ttm IGNORE NULLS) OVER w AS roe_ttm,
-                    LAST_VALUE(q_roa IGNORE NULLS) OVER w AS roa,
-                    LAST_VALUE(q_roa_ttm IGNORE NULLS) OVER w AS roa_ttm,
-                    CASE WHEN pb > 0 THEN ROUND(close / pb, 4) ELSE NULL END AS naps,
-                    LAST_VALUE(q_total_shares IGNORE NULLS) OVER w AS total_shares,
-                    LAST_VALUE(q_a_floats IGNORE NULLS) OVER w AS a_floats,
-                    turnover_rate
-                FROM combined
-                WINDOW w AS (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-                ORDER BY date
+                    v.date::TIMESTAMP_NS AS date,
+                    v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
+                    f.roe, f.roe_ttm, f.roa, f.roa_ttm,
+                    CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4)
+                         ELSE NULL END AS naps,
+                    f.total_shares, f.a_floats,
+                    v.turnover_rate
+                FROM valuation v
+                ASOF JOIN stocks s
+                    ON v.symbol = s.symbol AND v.date >= s.date
+                ASOF JOIN fundamentals f
+                    ON v.symbol = f.symbol AND v.date >= f.date
+                WHERE v.symbol = '{symbol_escaped}'
+                ORDER BY v.date
             ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
         """)
 
