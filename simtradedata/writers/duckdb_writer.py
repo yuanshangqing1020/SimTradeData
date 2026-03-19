@@ -1268,7 +1268,14 @@ class DuckDBWriter:
                 SELECT
                     ls.symbol,
                     tc.date,
-                    s.open, s.close, s.high, s.low, s.preclose,
+                    -- NULL out OHLC when volume=0 (suspended).
+                    -- This prevents mootdx's ex-rights adjusted prices
+                    -- from replacing the last traded price during suspension.
+                    CASE WHEN s.volume > 0 THEN s.open END AS open,
+                    CASE WHEN s.volume > 0 THEN s.close END AS close,
+                    CASE WHEN s.volume > 0 THEN s.high END AS high,
+                    CASE WHEN s.volume > 0 THEN s.low END AS low,
+                    s.preclose,
                     COALESCE(s.volume, 0) AS volume,
                     COALESCE(s.money, 0.0) AS money
                 FROM lifespans ls
@@ -1377,7 +1384,14 @@ class DuckDBWriter:
             joined AS (
                 SELECT
                     tc.date,
-                    r.open, r.close, r.high, r.low, r.preclose,
+                    -- NULL out OHLC when volume=0 (suspended).
+                    -- Prevents ex-rights adjusted prices from replacing
+                    -- the last traded price during suspension.
+                    CASE WHEN r.volume > 0 THEN r.open END AS open,
+                    CASE WHEN r.volume > 0 THEN r.close END AS close,
+                    CASE WHEN r.volume > 0 THEN r.high END AS high,
+                    CASE WHEN r.volume > 0 THEN r.low END AS low,
+                    r.preclose,
                     COALESCE(r.volume, 0) AS volume,
                     COALESCE(r.money, 0.0) AS money
                 FROM _trade_cal tc
