@@ -1022,7 +1022,13 @@ class DuckDBWriter:
             (output_path / subdir).mkdir(parents=True, exist_ok=True)
 
         logger.info("Exporting stocks...")
+        # Pre-compute trading calendar once for suspension-day fill
+        self.conn.execute(
+            "CREATE OR REPLACE TEMP TABLE _trade_cal AS "
+            "SELECT DISTINCT date FROM stocks"
+        )
         self._export_per_symbol_table("stocks", output_path / "stocks", market=market)
+        self.conn.execute("DROP TABLE IF EXISTS _trade_cal")
 
         logger.info("Exporting exrights...")
         self._export_per_symbol_table(
@@ -1137,10 +1143,7 @@ class DuckDBWriter:
         # gap_filled: forward-fill close into suspension gaps
         # filled: compute preclose from gap_filled close
         base_cte = f"""
-            WITH trade_cal AS (
-                SELECT DISTINCT date FROM stocks
-            ),
-            raw AS (
+            WITH raw AS (
                 SELECT date, open, close, high, low, preclose, volume, money
                 FROM stocks WHERE symbol = '{symbol_escaped}'
             ),
@@ -1153,7 +1156,7 @@ class DuckDBWriter:
                     r.open, r.close, r.high, r.low, r.preclose,
                     COALESCE(r.volume, 0) AS volume,
                     COALESCE(r.money, 0.0) AS money
-                FROM trade_cal tc
+                FROM _trade_cal tc
                 CROSS JOIN lifespan ls
                 LEFT JOIN raw r ON tc.date = r.date
                 WHERE tc.date >= ls.first_date AND tc.date <= ls.last_date
