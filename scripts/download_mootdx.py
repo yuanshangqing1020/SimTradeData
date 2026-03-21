@@ -458,14 +458,17 @@ class MootdxDownloader:
             except Exception as e:
                 logger.error(f"Failed to download fundamentals {year}Q{quarter}: {e}")
 
-    def fix_bonus_ps_precision(self) -> int:
-        """Correct bonus_ps precision using baostock exchange reference prices.
+    def fix_exrights_precision(self) -> int:
+        """Correct bonus_ps precision using exchange reference prices.
 
-        Mootdx fenhong values can be imprecise compared to the exchange's
-        actual reference prices.  This method uses baostock unadjusted daily
-        data (adjustflag='3') to derive precise dividends from:
+        On ex-dividend dates the exchange publishes a reference price (preclose)
+        computed from the actual dividend.  This method fetches unadjusted daily
+        data from baostock (adjustflag='3') whose preclose field IS the
+        exchange reference price, then derives the precise dividend:
 
-            dividend = close_prev - preclose_ex * m + rationed_ps * rationed_px
+            bonus_ps = close_prev - preclose_ex * m + rationed_ps * rationed_px
+
+        where m = 1 + allotted_ps + rationed_ps.
 
         Uses a tracking table (_bonus_ps_corrections) so that already-corrected
         symbols are skipped on incremental runs.
@@ -494,7 +497,7 @@ class MootdxDownloader:
 
         symbols_to_fix = uncorrected["symbol"].tolist()
         if not symbols_to_fix:
-            print("  All exrights bonus_ps already corrected")
+            print("  All exrights already corrected")
             return 0
 
         # Load exrights events for uncorrected symbols
@@ -521,7 +524,8 @@ class MootdxDownloader:
                 "bonus_ps": row["bonus_ps"],
             })
 
-        print(f"  Correcting bonus_ps for {len(symbols_to_fix)} symbols...")
+        print(f"  Correcting bonus_ps for {len(symbols_to_fix)} symbols "
+              f"(baostock preclose)...")
 
         bs.login()
         all_fixes = []
@@ -558,7 +562,9 @@ class MootdxDownloader:
             daily = pd.DataFrame(rows, columns=["date", "close", "preclose"])
             daily["date"] = pd.to_datetime(daily["date"])
             daily["close"] = pd.to_numeric(daily["close"], errors="coerce")
-            daily["preclose"] = pd.to_numeric(daily["preclose"], errors="coerce")
+            daily["preclose"] = pd.to_numeric(
+                daily["preclose"], errors="coerce"
+            )
             daily = daily.set_index("date")
 
             for ev in ev_list:
@@ -608,12 +614,14 @@ class MootdxDownloader:
             count = fix_counts.get(symbol, 0)
             self.writer.conn.execute(
                 "INSERT OR REPLACE INTO _bonus_ps_corrections "
-                "(symbol, corrected_at, fix_count) VALUES (?, CURRENT_TIMESTAMP, ?)",
+                "(symbol, corrected_at, fix_count) "
+                "VALUES (?, CURRENT_TIMESTAMP, ?)",
                 [symbol, count],
             )
 
         self.writer.conn.commit()
-        print(f"  Fixed {len(all_fixes)} events across {len(fix_counts)} symbols")
+        print(f"  Fixed {len(all_fixes)} events across "
+              f"{len(fix_counts)} symbols")
         return len(all_fixes)
 
 
@@ -801,12 +809,12 @@ def download_all_data(
                 print(f"Extras complete: {total_success} updated, "
                       f"{len(extras_stock_pool) - total_success} skipped/failed")
 
-            # Fix bonus_ps precision using baostock exchange reference prices
-            print("\nFixing bonus_ps precision (baostock)...")
+            # Fix bonus_ps precision using exchange reference prices (baostock)
+            print("\nFixing bonus_ps precision (baostock preclose)...")
             try:
-                downloader.fix_bonus_ps_precision()
+                downloader.fix_exrights_precision()
             except Exception as e:
-                logger.error(f"Failed to fix bonus_ps: {e}")
+                logger.error(f"Failed to fix exrights: {e}")
 
             # Download batch fundamentals
             if not skip_fundamentals:
