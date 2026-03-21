@@ -32,6 +32,18 @@ class DuckDBWriter:
     - Export to PTrade Parquet format
     """
 
+    # A-share stock code filter (excludes indices, B-shares, BJ exchange, etc.)
+    # Pattern: {prefix}.{market} where prefix is 6-digit numeric
+    _CN_STOCK_FILTER = (
+        "(symbol LIKE '000___.SZ' OR symbol LIKE '001___.SZ' "
+        "OR symbol LIKE '002___.SZ' OR symbol LIKE '003___.SZ' "
+        "OR symbol LIKE '300___.SZ' OR symbol LIKE '301___.SZ' "
+        "OR symbol LIKE '302___.SZ' "
+        "OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
+        "OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
+        "OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS')"
+    )
+
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1122,10 +1134,12 @@ class DuckDBWriter:
         import numpy as np
         t0 = time.time()
 
-        df_all = self.conn.execute("""
+        df_all = self.conn.execute(f"""
             SELECT symbol, date::TIMESTAMP_NS AS date,
                    allotted_ps, rationed_ps, rationed_px, bonus_ps, dividend
-            FROM exrights ORDER BY symbol, date
+            FROM exrights
+            WHERE {self._CN_STOCK_FILTER}
+            ORDER BY symbol, date
         """).fetchdf()
 
         if df_all.empty:
@@ -1160,7 +1174,7 @@ class DuckDBWriter:
         import time
         t0 = time.time()
 
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _fundamentals_export AS
             SELECT
                 symbol,
@@ -1184,6 +1198,7 @@ class DuckDBWriter:
                 interest_cover, roic, roa_ebit_ttm,
                 total_shares, a_floats
             FROM fundamentals
+            WHERE {self._CN_STOCK_FILTER}
         """)
 
         symbols = [r[0] for r in self.conn.execute(
@@ -1211,7 +1226,7 @@ class DuckDBWriter:
         import time
         t0 = time.time()
 
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _valuation_export AS
             SELECT
                 v.symbol,
@@ -1226,6 +1241,7 @@ class DuckDBWriter:
                 ON v.symbol = s.symbol AND v.date >= s.date
             ASOF JOIN fundamentals f
                 ON v.symbol = f.symbol AND v.date >= f.date
+            WHERE {self._CN_STOCK_FILTER.replace('symbol', 'v.symbol')}
         """)
 
         symbols = [r[0] for r in self.conn.execute(
@@ -1254,15 +1270,18 @@ class DuckDBWriter:
         t0 = time.time()
 
         # Step 1: Build gap-filled table for all stocks at once
+        cn_filter = f"WHERE {self._CN_STOCK_FILTER}" if market == "cn" else ""
         logger.info("  Pre-computing gap-filled data for all stocks...")
-        self.conn.execute("""
+        self.conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _stocks_filled AS
             WITH trade_cal AS (
                 SELECT DISTINCT date FROM stocks
+                UNION
+                SELECT date FROM trade_days
             ),
             lifespans AS (
                 SELECT symbol, MIN(date) AS first_date, MAX(date) AS last_date
-                FROM stocks GROUP BY symbol
+                FROM stocks {cn_filter} GROUP BY symbol
             ),
             joined AS (
                 SELECT
@@ -1295,14 +1314,55 @@ class DuckDBWriter:
                     preclose, volume, money
                 FROM joined
                 WINDOW w AS (PARTITION BY symbol ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            ),
+            with_lag AS (
+                SELECT
+                    symbol, date,
+                    open, close, high, low,
+                    LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS lag_close,
+                    -- Use last ACTIVE trading date (not gap-filled date) for exrights range check.
+                    -- During suspension, lag_date would be yesterday (gap-filled),
+                    -- but we need the last real trading day to catch exrights events
+                    -- that occurred during the suspension period.
+                    last_value(CASE WHEN volume > 0 THEN date END IGNORE NULLS) OVER (
+                        PARTITION BY symbol ORDER BY date
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                    ) AS last_active_date,
+                    preclose AS stored_preclose,
+                    volume, money
+                FROM gap_filled
+            ),
+            adj AS (
+                SELECT
+                    wl.symbol, wl.date,
+                    SUM(COALESCE(ex.bonus_ps, 0)
+                        - COALESCE(ex.rationed_px, 0) * COALESCE(ex.rationed_ps, 0)
+                    ) AS total_deduction,
+                    EXP(SUM(LN(
+                        1 + COALESCE(ex.allotted_ps, 0) + COALESCE(ex.rationed_ps, 0)
+                    ))) AS total_divisor,
+                    COUNT(ex.date) AS event_count
+                FROM with_lag wl
+                INNER JOIN exrights ex ON ex.symbol = wl.symbol
+                    AND ex.date > wl.last_active_date AND ex.date <= wl.date
+                GROUP BY wl.symbol, wl.date
             )
             SELECT
-                symbol,
-                date::TIMESTAMP_NS AS date,
-                open, close, high, low,
-                COALESCE(preclose, LAG(close) OVER (PARTITION BY symbol ORDER BY date)) AS preclose,
-                volume, money
-            FROM gap_filled
+                wl.symbol,
+                wl.date::TIMESTAMP_NS AS date,
+                wl.open, wl.close, wl.high, wl.low,
+                CASE
+                    WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
+                         AND wl.volume > 0 THEN
+                        ROUND(
+                            (wl.lag_close - adj.total_deduction)
+                            / adj.total_divisor,
+                            2)
+                    ELSE COALESCE(wl.lag_close, wl.stored_preclose)
+                END AS preclose,
+                wl.volume, wl.money
+            FROM with_lag wl
+            LEFT JOIN adj ON adj.symbol = wl.symbol AND adj.date = wl.date
         """)
         t1 = time.time()
         row_count = self.conn.execute("SELECT COUNT(*) FROM _stocks_filled").fetchone()[0]
@@ -1414,12 +1474,48 @@ class DuckDBWriter:
                 FROM joined
                 WINDOW w AS (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
             ),
-            filled AS (
+            with_lag AS (
                 SELECT
-                    date::TIMESTAMP_NS AS date, open, close, high, low,
-                    COALESCE(preclose, LAG(close) OVER (ORDER BY date)) AS preclose,
+                    date, open, close, high, low,
+                    LAG(close) OVER (ORDER BY date) AS lag_close,
+                    last_value(CASE WHEN volume > 0 THEN date END IGNORE NULLS) OVER (
+                        ORDER BY date
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                    ) AS last_active_date,
+                    preclose AS stored_preclose,
                     volume, money
                 FROM gap_filled
+            ),
+            adj AS (
+                SELECT
+                    wl.date,
+                    SUM(COALESCE(ex.bonus_ps, 0)
+                        - COALESCE(ex.rationed_px, 0) * COALESCE(ex.rationed_ps, 0)
+                    ) AS total_deduction,
+                    EXP(SUM(LN(
+                        1 + COALESCE(ex.allotted_ps, 0) + COALESCE(ex.rationed_ps, 0)
+                    ))) AS total_divisor,
+                    COUNT(ex.date) AS event_count
+                FROM with_lag wl
+                INNER JOIN exrights ex ON ex.symbol = '{symbol_escaped}'
+                    AND ex.date > wl.last_active_date AND ex.date <= wl.date
+                GROUP BY wl.date
+            ),
+            filled AS (
+                SELECT
+                    wl.date::TIMESTAMP_NS AS date, wl.open, wl.close, wl.high, wl.low,
+                    CASE
+                        WHEN adj.event_count > 0 AND wl.lag_close IS NOT NULL
+                             AND wl.volume > 0 THEN
+                            ROUND(
+                                (wl.lag_close - adj.total_deduction)
+                                / adj.total_divisor,
+                                2)
+                        ELSE COALESCE(wl.lag_close, wl.stored_preclose)
+                    END AS preclose,
+                    wl.volume, wl.money
+                FROM with_lag wl
+                LEFT JOIN adj ON adj.date = wl.date
             )
         """
 
@@ -1698,6 +1794,73 @@ class DuckDBWriter:
             f"{len(active_set)} active stocks"
         )
 
+    def _enrich_halt_status_from_volume(self) -> None:
+        """Enrich stock_status HALT entries using volume=0 from stocks table.
+
+        For each trading date, marks A-share stocks with volume=0 (within
+        their lifespan) as HALT. Merges with any existing BaoStock-sourced
+        HALT data already in the stock_status table.
+        """
+        import time
+        t0 = time.time()
+
+        # Use a temp table to avoid complex INSERT OR REPLACE with aggregation
+        self.conn.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _halt_enriched AS
+            WITH lifespans AS (
+                SELECT symbol, MIN(date) AS first_date, MAX(date) AS last_date
+                FROM stocks
+                WHERE {self._CN_STOCK_FILTER}
+                GROUP BY symbol
+            ),
+            trade_dates AS (
+                SELECT DISTINCT date FROM stocks
+            ),
+            vol_halted AS (
+                SELECT td.date, ls.symbol
+                FROM trade_dates td
+                CROSS JOIN lifespans ls
+                LEFT JOIN stocks s ON s.symbol = ls.symbol AND s.date = td.date
+                WHERE td.date >= ls.first_date AND td.date <= ls.last_date
+                  AND (s.volume IS NULL OR s.volume = 0)
+            ),
+            existing_halt AS (
+                SELECT STRPTIME(date, '%Y%m%d')::DATE AS date,
+                       unnest(symbols::JSON::VARCHAR[]) AS symbol
+                FROM stock_status
+                WHERE status_type = 'HALT'
+            ),
+            combined AS (
+                SELECT date, symbol FROM vol_halted
+                UNION
+                SELECT date, symbol FROM existing_halt
+            )
+            SELECT
+                STRFTIME(date, '%Y%m%d') AS date,
+                'HALT' AS status_type,
+                to_json(list(symbol ORDER BY symbol)) AS symbols
+            FROM combined
+            GROUP BY date
+        """)
+
+        # Replace existing HALT entries
+        self.conn.execute(
+            "DELETE FROM stock_status WHERE status_type = 'HALT'"
+        )
+        self.conn.execute("""
+            INSERT INTO stock_status (date, status_type, symbols)
+            SELECT date, status_type, symbols FROM _halt_enriched
+        """)
+        self.conn.execute("DROP TABLE IF EXISTS _halt_enriched")
+
+        halt_count = self.conn.execute(
+            "SELECT COUNT(*) FROM stock_status WHERE status_type = 'HALT'"
+        ).fetchone()[0]
+        logger.info(
+            f"Enriched HALT status from volume data: "
+            f"{halt_count} date entries in {time.time() - t0:.1f}s"
+        )
+
     def _export_metadata(self, output_dir: Path) -> None:
         """Export metadata tables using DuckDB COPY"""
 
@@ -1742,7 +1905,8 @@ class DuckDBWriter:
                 (FORMAT PARQUET, CODEC 'ZSTD')
             """)
 
-        # stock_status.parquet
+        # stock_status.parquet — enrich HALT data from volume before export
+        self._enrich_halt_status_from_volume()
         count = self.conn.execute("SELECT COUNT(*) FROM stock_status").fetchone()[0]
         if count > 0:
             self.conn.execute(f"""
