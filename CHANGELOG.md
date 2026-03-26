@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.1] - 2026-03-26
+
+### Fixed
+- Valuation export: replace `ASOF JOIN fundamentals` with `LEFT JOIN LATERAL` to preserve early-period valuation rows when no fundamentals match exists
+- Affects both single-symbol and batch export paths in `DuckDBWriter`
+
 ## [1.2.0] - 2026-03-13 - Smart Data Source Router / 智能数据源路由
 
 ### Added

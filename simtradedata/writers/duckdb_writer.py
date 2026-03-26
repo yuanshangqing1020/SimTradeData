@@ -1252,8 +1252,12 @@ class DuckDBWriter:
             FROM valuation v
             ASOF JOIN (SELECT symbol, date, close FROM stocks) s
                 ON v.symbol = s.symbol AND v.date >= s.date
-            ASOF JOIN fundamentals f
-                ON v.symbol = f.symbol AND v.date >= f.date
+            LEFT JOIN LATERAL (
+                SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
+                FROM fundamentals f2
+                WHERE f2.symbol = v.symbol AND f2.date <= v.date
+                ORDER BY f2.date DESC LIMIT 1
+            ) f ON TRUE
             WHERE {self._CN_STOCK_FILTER.replace('symbol', 'v.symbol')}
         """)
 
@@ -1649,8 +1653,12 @@ class DuckDBWriter:
                 FROM valuation v
                 ASOF JOIN stocks s
                     ON v.symbol = s.symbol AND v.date >= s.date
-                ASOF JOIN fundamentals f
-                    ON v.symbol = f.symbol AND v.date >= f.date
+                LEFT JOIN LATERAL (
+                    SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
+                    FROM fundamentals f2
+                    WHERE f2.symbol = v.symbol AND f2.date <= v.date
+                    ORDER BY f2.date DESC LIMIT 1
+                ) f ON TRUE
                 WHERE v.symbol = '{symbol_escaped}'
                 ORDER BY v.date
             ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
