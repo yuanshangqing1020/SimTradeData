@@ -41,7 +41,11 @@ class DuckDBWriter:
         "OR symbol LIKE '302___.SZ' "
         "OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
         "OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
-        "OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS')"
+        "OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS' "
+        "OR symbol LIKE '50____.SS' OR symbol LIKE '51____.SS' "
+        "OR symbol LIKE '52____.SS' OR symbol LIKE '56____.SS' "
+        "OR symbol LIKE '58____.SS' OR symbol LIKE '59____.SS' "
+        "OR symbol LIKE '15____.SZ' OR symbol LIKE '16____.SZ')"
     )
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
@@ -116,6 +120,14 @@ class DuckDBWriter:
                 symbol VARCHAR NOT NULL,
                 date DATE NOT NULL,
                 publ_date VARCHAR,
+                operating_revenue DOUBLE,
+                operating_cost DOUBLE,
+                finance_expense DOUBLE,
+                operating_profit DOUBLE,
+                total_profit DOUBLE,
+                net_profit DOUBLE,
+                np_parent_company DOUBLE,
+                basic_eps DOUBLE,
                 operating_revenue_grow_rate DOUBLE,
                 net_profit_grow_rate DOUBLE,
                 basic_eps_yoy DOUBLE,
@@ -593,6 +605,14 @@ class DuckDBWriter:
             "symbol",
             "date",
             "publ_date",
+            "operating_revenue", 
+            "operating_cost", 
+            "finance_expense",
+            "operating_profit", 
+            "total_profit", 
+            "net_profit", 
+            "np_parent_company", 
+            "basic_eps",
             "operating_revenue_grow_rate",
             "net_profit_grow_rate",
             "basic_eps_yoy",
@@ -1188,6 +1208,9 @@ class DuckDBWriter:
             SELECT
                 symbol,
                 date::TIMESTAMP_NS AS date, publ_date,
+                operating_revenue, operating_cost, finance_expense,
+                operating_profit, total_profit, net_profit, 
+                np_parent_company, basic_eps,
                 operating_revenue_grow_rate, net_profit_grow_rate,
                 basic_eps_yoy, np_parent_company_yoy,
                 net_profit_ratio,
@@ -1600,6 +1623,9 @@ class DuckDBWriter:
             COPY (
                 SELECT
                     date::TIMESTAMP_NS AS date, publ_date,
+                    operating_revenue, operating_cost, finance_expense,
+                    operating_profit, total_profit, net_profit, 
+                    np_parent_company, basic_eps,
                     operating_revenue_grow_rate, net_profit_grow_rate,
                     basic_eps_yoy, np_parent_company_yoy,
                     net_profit_ratio,
@@ -1701,8 +1727,8 @@ class DuckDBWriter:
             from mootdx.quotes import Quotes
 
             client = Quotes.factory(market="std", quiet=True)
-            sz_prefixes = ("000", "001", "002", "003", "300", "301", "302")
-            sh_prefixes = ("600", "601", "603", "605", "688", "689")
+            sz_prefixes = ("000", "001", "002", "003", "300", "301", "302", "15", "16")
+            sh_prefixes = ("600", "601", "603", "605", "688", "689", "50", "51", "52", "56", "58", "59")
 
             for market in [0, 1]:  # 0=SZ, 1=SH
                 try:
@@ -1717,10 +1743,11 @@ class DuckDBWriter:
                         if market == 1 and code.startswith(("000", "399", "999")):
                             continue
                         if market == 0 and (
-                            code.startswith(
-                                ("15", "16", "50", "51", "52", "56", "58", "59")
-                            )
-                            or code.startswith("39")
+                            # code.startswith(
+                            #     ("15", "16", "50", "51", "52", "56", "58", "59")
+                            # )
+                            # or code.startswith("39")
+                            code.startswith("39")
                         ):
                             continue
                         if market == 0 and code.startswith(sz_prefixes):
@@ -1749,6 +1776,10 @@ class DuckDBWriter:
                 "    OR symbol LIKE '302___.SZ' "
                 "    OR symbol LIKE '600___.SS' OR symbol LIKE '601___.SS' "
                 "    OR symbol LIKE '603___.SS' OR symbol LIKE '605___.SS' "
+                "    OR symbol LIKE '50____.SS' OR symbol LIKE '51____.SS' "
+                "    OR symbol LIKE '52____.SS' OR symbol LIKE '56____.SS' "
+                "    OR symbol LIKE '58____.SS' OR symbol LIKE '59____.SS' "
+                "    OR symbol LIKE '15____.SZ' OR symbol LIKE '16____.SZ' "
                 "    OR symbol LIKE '688___.SS' OR symbol LIKE '689___.SS') "
                 "GROUP BY symbol"
             ).fetchdf()
