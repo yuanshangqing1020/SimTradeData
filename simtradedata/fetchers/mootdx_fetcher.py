@@ -11,6 +11,9 @@ from typing import List, Optional
 
 import pandas as pd
 
+# mootdx / TDX HQ caps K-line batch size at 800 bars per request.
+_MOOTDX_MAX_BARS_PER_REQUEST = 800
+
 from simtradedata.fetchers.base_fetcher import BaseFetcher
 from simtradedata.resilience.retry import RetryConfig, retry
 from simtradedata.utils.code_utils import (
@@ -343,7 +346,8 @@ class MootdxFetcher(BaseFetcher):
             start_date: Start date (YYYY-MM-DD), optional
             end_date: End date (YYYY-MM-DD), optional
             frequency: Bar frequency (default: daily)
-            offset: Number of bars to fetch
+            offset: Bars per HQ request (capped at 800 by mootdx; uses pagination
+                via ``start`` to load full history between ``start_date`` and ``end_date``)
 
         Returns:
             DataFrame with index bars
@@ -354,29 +358,52 @@ class MootdxFetcher(BaseFetcher):
         market = get_mootdx_market(symbol)
 
         try:
-            df = self._client.index(
-                symbol=code,
-                market=market,
-                frequency=frequency,
-                offset=offset,
-            )
+            chunk = min(max(offset, 1), _MOOTDX_MAX_BARS_PER_REQUEST)
+            dfs: List[pd.DataFrame] = []
+            start_idx = 0
+            target_start = pd.to_datetime(start_date) if start_date else None
 
-            if df is None or df.empty:
+            # TDX HQ returns newer bars first; ``start`` steps backward in time.
+            max_chunks = 400  # >> years of trading days @ 800 bars/chunk
+
+            for _ in range(max_chunks):
+                df_part = self._client.index(
+                    symbol=code,
+                    market=market,
+                    frequency=frequency,
+                    start=start_idx,
+                    offset=chunk,
+                )
+
+                if df_part is None or df_part.empty:
+                    break
+
+                dfs.append(df_part.reset_index(drop=True))
+
+                min_ts = pd.to_datetime(df_part["datetime"]).min()
+                partial = len(df_part) < chunk
+                reached_history = (
+                    target_start is not None and min_ts.normalize() <= target_start
+                )
+
+                if partial or reached_history:
+                    break
+
+                start_idx += chunk
+
+            if not dfs:
                 logger.debug(f"No index data for {symbol}")
                 return pd.DataFrame()
 
-            # mootdx index() returns 'date' as both index and column; drop index
-            df = df.reset_index(drop=True)
-
+            df = pd.concat(dfs, ignore_index=True)
             df = df.rename(columns={"datetime": "date", "vol": "volume"})
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").drop_duplicates(subset=["date"], keep="last")
 
-            # Filter by date range if specified
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-                if start_date:
-                    df = df[df["date"] >= start_date]
-                if end_date:
-                    df = df[df["date"] <= end_date]
+            if start_date:
+                df = df[df["date"] >= start_date]
+            if end_date:
+                df = df[df["date"] <= end_date]
 
             logger.info(f"Fetched {len(df)} index bars for {symbol}")
             return df
@@ -404,12 +431,12 @@ class MootdxFetcher(BaseFetcher):
         Returns:
             DataFrame with columns: calendar_date, is_trading_day
         """
-        # Use SSE Composite Index to derive trading days
+        # Use SSE Composite Index to derive trading days (paginated fetch; mootdx
+        # caps each request at 800 bars unless start is incremented).
         index_df = self.fetch_index_bars(
             "000001.SS",
             start_date=start_date,
             end_date=end_date,
-            offset=2000,
         )
 
         if index_df.empty:

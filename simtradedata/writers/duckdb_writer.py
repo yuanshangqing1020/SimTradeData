@@ -473,6 +473,26 @@ class DuckDBWriter:
             self.conn.close()
             self.conn = None
 
+    def _reconnect_after_export_phase(self) -> None:
+        """Close and reopen the DB connection to return memory to the OS.
+
+        Long export runs (gap-filled stocks, fundamentals temp tables) leave
+        DuckDB holding large allocators; entering valuation with a fresh handle
+        avoids WSL/Linux OOM kills that present as an immediate ``Killed`` with
+        no Python traceback.
+        """
+        import gc
+
+        gc.collect()
+        path = str(self.db_path)
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = None
+        self.conn = duckdb.connect(path)
+
     def begin(self) -> None:
         """Begin a transaction for batch writes"""
         self.conn.execute("BEGIN TRANSACTION")
@@ -1064,12 +1084,15 @@ class DuckDBWriter:
 
         logger.info("Exporting stocks...")
         self._export_stocks_batch(output_path / "stocks", market=market)
+        self._reconnect_after_export_phase()
 
         logger.info("Exporting exrights...")
         self._export_exrights_batch(output_path / "exrights")
+        self._reconnect_after_export_phase()
 
         logger.info("Exporting fundamentals...")
         self._export_fundamentals_batch(output_path / "fundamentals")
+        self._reconnect_after_export_phase()
 
         logger.info("Exporting valuation...")
         self._export_valuation_batch(output_path / "valuation")
@@ -1196,6 +1219,10 @@ class DuckDBWriter:
             df.to_parquet(str(output_dir / f"{symbol}.parquet"), index=False, compression="zstd")
             count += 1
 
+        import gc
+
+        del df_all
+        gc.collect()
         logger.info(f"Exported {count} exrights files in {time.time() - t0:.1f}s")
 
     def _export_fundamentals_batch(self, output_dir: Path) -> None:
@@ -1250,54 +1277,32 @@ class DuckDBWriter:
         logger.info(f"Exported {len(symbols)} fundamentals files in {time.time() - t0:.1f}s")
 
     def _export_valuation_batch(self, output_dir: Path) -> None:
-        """Export all valuation data enriched with fundamentals (batch via temp table).
+        """Export all valuation rows enriched with fundamentals (per-symbol).
 
-        Uses ASOF JOIN to efficiently pick the most recent fundamentals record
-        for each valuation row, avoiding expensive window-function gap-filling.
+        The previous implementation materialized ~all valuation × ASOF(stocks)
+        × LATERAL fundamentals in one temp table, which peaks RAM and commonly
+        gets OOM-killed on WSL. Per-symbol COPY matches ``_export_valuation_enriched``
+        logic while bounding memory to one ticker at a time.
         """
         import time
+
         t0 = time.time()
+        v_where = self._CN_STOCK_FILTER.replace("symbol", "v.symbol")
+        symbols = [
+            r[0]
+            for r in self.conn.execute(
+                f"SELECT DISTINCT v.symbol FROM valuation v WHERE {v_where} ORDER BY 1"
+            ).fetchall()
+        ]
 
-        self.conn.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _valuation_export AS
-            SELECT
-                v.symbol,
-                v.date::TIMESTAMP_NS AS date,
-                v.pe_ttm, v.pb, v.ps_ttm, v.pcf,
-                f.roe, f.roe_ttm, f.roa, f.roa_ttm,
-                CASE WHEN v.pb > 0 THEN ROUND(s.close / v.pb, 4) ELSE NULL END AS naps,
-                f.total_shares, f.a_floats,
-                CASE WHEN f.total_shares > 0 AND s.close IS NOT NULL
-                     THEN ROUND(f.total_shares * s.close, 2) END AS total_value,
-                CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
-                     THEN ROUND(f.a_floats * s.close, 2) END AS float_value,
-                v.turnover_rate
-            FROM valuation v
-            ASOF JOIN (SELECT symbol, date, close FROM stocks) s
-                ON v.symbol = s.symbol AND v.date >= s.date
-            LEFT JOIN LATERAL (
-                SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
-                FROM fundamentals f2
-                WHERE f2.symbol = v.symbol AND f2.date <= v.date
-                ORDER BY f2.date DESC LIMIT 1
-            ) f ON TRUE
-            WHERE {self._CN_STOCK_FILTER.replace('symbol', 'v.symbol')}
-        """)
-
-        symbols = [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT symbol FROM _valuation_export ORDER BY symbol"
-        ).fetchall()]
+        if not symbols:
+            logger.info("No valuation data to export")
+            return
 
         for symbol in symbols:
             se = symbol.replace("'", "''")
-            self.conn.execute(f"""
-                COPY (
-                    SELECT * EXCLUDE (symbol) FROM _valuation_export
-                    WHERE symbol = '{se}' ORDER BY date
-                ) TO '{output_dir / f"{symbol}.parquet"}' (FORMAT PARQUET, CODEC 'ZSTD')
-            """)
+            self._export_valuation_enriched(se, output_dir / f"{symbol}.parquet")
 
-        self.conn.execute("DROP TABLE IF EXISTS _valuation_export")
         logger.info(f"Exported {len(symbols)} valuation files in {time.time() - t0:.1f}s")
 
     def _export_stocks_batch(self, output_dir: Path, market: str = "cn") -> None:
@@ -1660,7 +1665,9 @@ class DuckDBWriter:
         - roe, roa, roe_ttm, roa_ttm: forward filled from fundamentals
         - naps: calculated as close / pb (derived from pbMRQ definition)
 
-        Uses LAST_VALUE with IGNORE NULLS for forward fill.
+        Single-symbol slices + chained ASOF JOINs replace ``LEFT JOIN LATERAL``
+        (per-row fundamentals lookup), avoiding huge intermediate state when the
+        planner touches the full ``stocks`` / ``fundamentals`` relations.
         """
         self.conn.execute(f"""
             COPY (
@@ -1676,16 +1683,21 @@ class DuckDBWriter:
                     CASE WHEN f.a_floats > 0 AND s.close IS NOT NULL
                          THEN ROUND(f.a_floats * s.close, 2) END AS float_value,
                     v.turnover_rate
-                FROM valuation v
-                ASOF JOIN stocks s
-                    ON v.symbol = s.symbol AND v.date >= s.date
-                LEFT JOIN LATERAL (
-                    SELECT total_shares, a_floats, roe, roe_ttm, roa, roa_ttm
-                    FROM fundamentals f2
-                    WHERE f2.symbol = v.symbol AND f2.date <= v.date
-                    ORDER BY f2.date DESC LIMIT 1
-                ) f ON TRUE
-                WHERE v.symbol = '{symbol_escaped}'
+                FROM (
+                    SELECT date, pe_ttm, pb, ps_ttm, pcf, turnover_rate
+                    FROM valuation
+                    WHERE symbol = '{symbol_escaped}'
+                ) v
+                ASOF JOIN (
+                    SELECT date, close FROM stocks
+                    WHERE symbol = '{symbol_escaped}'
+                ) s ON v.date >= s.date
+                ASOF LEFT JOIN (
+                    SELECT date, total_shares, a_floats,
+                           roe, roe_ttm, roa, roa_ttm
+                    FROM fundamentals
+                    WHERE symbol = '{symbol_escaped}'
+                ) f ON v.date >= f.date
                 ORDER BY v.date
             ) TO '{output_file}' (FORMAT PARQUET, CODEC 'ZSTD')
         """)
